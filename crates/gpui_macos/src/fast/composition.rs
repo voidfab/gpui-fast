@@ -549,6 +549,13 @@ pub(crate) fn create_native_surface(
             initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))
         ];
         anyhow::ensure!(!view.is_null(), "failed to create native surface container");
+        // The window's view is unflipped, so a subview with no autoresizing mask
+        // keeps its distance from the bottom edge: a window resize would carry
+        // the container (and the native view in it) down with the bottom edge
+        // until the next frame places it again from the top. Anchor it to the
+        // top-left, where its bounds are measured from.
+        let _: () = msg_send![view, setAutoresizingMask: objc2_app_kit::NSAutoresizingMaskOptions::ViewMinYMargin
+                | objc2_app_kit::NSAutoresizingMaskOptions::ViewMaxXMargin];
         let _: () = msg_send![view, setWantsLayer: Bool::YES];
         let layer: Id = msg_send![view, layer];
         let _: () = msg_send![layer, setMasksToBounds: Bool::YES];
