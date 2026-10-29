@@ -942,3 +942,89 @@ fn a_moved_view_in_a_list_row_keeps_its_nodes_while_the_row_is_out_of_view() {
         "rows scrolled back into view should find the nodes they had: {back:?}"
     );
 }
+
+/// One line of a log whose lines are replaced as fast as it shows them.
+struct LogLine {
+    ix: usize,
+}
+
+impl Render for LogLine {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h(px(20.))
+            .child(format!("line {} of the log", self.ix))
+    }
+}
+
+/// A transcript of `LogLine`s, every one of them a new view each frame.
+struct ChurningLog {
+    list: crate::ListState,
+    lines: Vec<Entity<LogLine>>,
+}
+
+impl Render for ChurningLog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        crate::list(self.list.clone(), move |ix, _, cx| {
+            let line = view.upgrade().map(|view| view.read(cx).lines[ix].clone());
+            div().children(line).into_any_element()
+        })
+        .size_full()
+    }
+}
+
+/// Replaces every line of a 40-line log with a new view, `frames` times, a
+/// frame each, then returns the layout nodes the window holds once it is at
+/// rest: no frame is drawn after the last line lands.
+fn layout_nodes_at_rest_after_churn(frames: usize) -> usize {
+    const LINES: usize = 40;
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|_, cx| ChurningLog {
+        list: crate::ListState::new(LINES, crate::ListAlignment::Top, px(0.)),
+        lines: (0..LINES).map(|ix| cx.new(|_| LogLine { ix })).collect(),
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.set_view_retention(true);
+        if crate::fast::layers::COMPILED {
+            window.set_scroll_layers(false);
+        }
+        window.resize(size(px(400.), px(800.)));
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    for frame in 1..=frames {
+        window
+            .update(&mut cx, |log, _, cx| {
+                log.lines = (0..LINES)
+                    .map(|ix| {
+                        cx.new(|_| LogLine {
+                            ix: frame * LINES + ix,
+                        })
+                    })
+                    .collect();
+                log.list.splice(0..LINES, LINES);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+    cx.update_window(window.into(), |_, window, _| window.layout_node_count())
+        .unwrap()
+}
+
+/// A list row's nodes linger for a while after the row was last laid out,
+/// for it to find them if it is scrolled back. A log whose rows are replaced
+/// as fast as it lays them out has no row coming back, and a window at rest
+/// draws no frame to age what lingers: before the budget, the nodes it held
+/// at rest grew with the length of the burst, up to 240 frames' worth of
+/// rows. What lingers is bounded in the frame that lays the rows out.
+#[test]
+fn a_churning_list_keeps_a_bounded_number_of_lingering_nodes_at_rest() {
+    let short = layout_nodes_at_rest_after_churn(60);
+    let long = layout_nodes_at_rest_after_churn(200);
+    assert_eq!(
+        short, long,
+        "the nodes held at rest grew with the burst: {short} after 60 frames, {long} after 200"
+    );
+}
