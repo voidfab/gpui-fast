@@ -40,6 +40,15 @@ const PATH_SAMPLE_COUNT: u32 = 4;
 const INSTANCE_BUFFER_ALIGNMENT: usize = 256;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 
+// vulpine (FOX9-c83a7e): wide gamut, an RGBA16Float drawable tagged extended sRGB (metal_renderer/wide_gamut.rs).
+mod wide_gamut;
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+pub use wide_gamut::{WideReadback, take_wide_readback};
+pub use wide_gamut::{
+    NARROW_FORMAT, WIDE_FORMAT, layer_is_extended_srgb, set_headless_wide_gamut, set_wide_gamut,
+    wide_gamut,
+};
+
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
 pub type Renderer = MetalRenderer;
 
@@ -138,6 +147,8 @@ pub struct MetalRenderer {
     pub(crate) path_intermediate_texture: Option<metal::Texture>,
     pub(crate) path_intermediate_msaa_texture: Option<metal::Texture>,
     path_sample_count: u32,
+    /// The drawable's, every pipeline's and every intermediate's format (vulpine, FOX9-c83a7e: wide_gamut.rs).
+    pixel_format: MTLPixelFormat,
     /// Offscreen render target reused across `render_scene` calls when
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -185,7 +196,7 @@ impl MetalRenderer {
 
     pub(crate) fn configure_layer(layer: &metal::MetalLayerRef, device: &metal::DeviceRef, transparent: bool) {
         layer.set_device(device);
-        layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        wide_gamut::configure_layer_format(layer);
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.set_opaque(!transparent);
@@ -258,6 +269,7 @@ impl MetalRenderer {
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     ) -> Self {
+        let pixel_format = wide_gamut::initial_format(layer.as_deref());
         #[cfg(feature = "runtime_shaders")]
         let library = device
             .new_library_with_source(&SHADERS_SOURCE_FILE, &metal::CompileOptions::new())
@@ -310,7 +322,7 @@ impl MetalRenderer {
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
             PATH_SAMPLE_COUNT,
         );
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
@@ -319,7 +331,7 @@ impl MetalRenderer {
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -327,7 +339,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -335,7 +347,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -343,7 +355,7 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -351,7 +363,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -359,7 +371,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -367,7 +379,7 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         );
         let surfaces_bgra_pipeline_state = build_pipeline_state(
             &device,
@@ -425,6 +437,7 @@ impl MetalRenderer {
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
+            pixel_format,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
             fast_layers: crate::fast::layers::TileCache::default(),
@@ -475,7 +488,7 @@ impl MetalRenderer {
         let texture_descriptor = metal::TextureDescriptor::new();
         texture_descriptor.set_width(size.width.0 as u64);
         texture_descriptor.set_height(size.height.0 as u64);
-        texture_descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.set_pixel_format(self.pixel_format);
         texture_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
         texture_descriptor
             .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
@@ -512,6 +525,7 @@ impl MetalRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
+        self.follow_wide_gamut();
         let layer = match &self.layer {
             Some(l) => l.clone(),
             None => {
@@ -611,6 +625,7 @@ impl MetalRenderer {
     /// use `render_scene_to_image()` instead.
     #[cfg(any(test, feature = "test-support"))]
     pub fn render_to_image(&mut self, scene: &Scene) -> Result<RgbaImage> {
+        self.follow_wide_gamut();
         let layer = self
             .layer
             .clone()
@@ -649,6 +664,7 @@ impl MetalRenderer {
 
         // Headless callers do not have a Cocoa event-loop pool to release
         // autoreleased command buffers and render-pass descriptors.
+        self.follow_wide_gamut();
         objc2::rc::autoreleasepool(|_| {
             // Update path intermediate textures for this size
             self.update_path_intermediate_textures(size);
@@ -657,7 +673,7 @@ impl MetalRenderer {
             let texture_descriptor = metal::TextureDescriptor::new();
             texture_descriptor.set_width(size.width.0 as u64);
             texture_descriptor.set_height(size.height.0 as u64);
-            texture_descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+            texture_descriptor.set_pixel_format(self.pixel_format);
             texture_descriptor.set_usage(
                 metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
             );
@@ -703,6 +719,7 @@ impl MetalRenderer {
             anyhow::bail!("Invalid size for render_scene: {:?}", size);
         }
 
+        self.follow_wide_gamut();
         objc2::rc::autoreleasepool(|_| {
             self.update_path_intermediate_textures(size);
 
@@ -713,7 +730,7 @@ impl MetalRenderer {
                 let texture_descriptor = metal::TextureDescriptor::new();
                 texture_descriptor.set_width(size.width.0 as u64);
                 texture_descriptor.set_height(size.height.0 as u64);
-                texture_descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+                texture_descriptor.set_pixel_format(self.pixel_format);
                 texture_descriptor.set_usage(
                     metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
                 );
@@ -1414,6 +1431,9 @@ pub(crate) fn new_command_encoder_for_texture<'a>(
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
+    if texture.pixel_format() == WIDE_FORMAT {
+        return wide_gamut::read_wide_texture(texture);
+    }
     let width = texture.width() as u32;
     let height = texture.height() as u32;
     let bytes_per_row = width as usize * 4;
