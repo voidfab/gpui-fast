@@ -245,7 +245,10 @@ fn draw_tile_scene(
             // The core keeps paths out of layers: a path rasterized into a
             // tile and moved by an odd number of pixels antialiases
             // differently. Metal draws no subpixel sprites.
-            PrimitiveBatch::Paths(range) | PrimitiveBatch::SubpixelSprites { range, .. } => {
+            // vulpine (FOX9-f0a295): nor GPU paints (content holding one is drawn into the frame).
+            PrimitiveBatch::Paths(range)
+            | PrimitiveBatch::SubpixelSprites { range, .. }
+            | PrimitiveBatch::GpuPaints(range) => {
                 debug_assert!(
                     range.is_empty(),
                     "a layer tile holds a path or subpixel sprite"

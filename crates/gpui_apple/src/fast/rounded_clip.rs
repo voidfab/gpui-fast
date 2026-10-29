@@ -245,6 +245,28 @@ fn encode<'a>(
                 viewport,
                 encoder,
             ),
+            // vulpine (FOX9-f0a295): GPU paints inside the group, its clip stack bound and handed over.
+            PrimitiveBatch::GpuPaints(range) => {
+                let rounded: Vec<[f32; 12]> = clips
+                    .iter()
+                    .map(|clip| {
+                        let mut flat = [0f32; 12];
+                        flat[..4].copy_from_slice(&clip.bounds);
+                        flat[4..8].copy_from_slice(&clip.horizontal);
+                        flat[8..].copy_from_slice(&clip.vertical);
+                        flat
+                    })
+                    .collect();
+                crate::gpu_painter::draw(
+                    renderer,
+                    &scene.gpu_paints[range],
+                    texture,
+                    commands,
+                    &mut encoder,
+                    viewport,
+                    &rounded,
+                );
+            }
             PrimitiveBatch::SubpixelSprites { .. } => unreachable!("Metal uses grayscale glyphs"),
         }
     }
