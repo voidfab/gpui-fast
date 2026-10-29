@@ -80,6 +80,10 @@ pub(crate) struct LayoutRetention {
     /// How many list rows are being laid out, nested. See
     /// [`RetainedNode::lingers`].
     list_rows: usize,
+    /// The frames the lingering nodes kept by the sweep were last claimed in,
+    /// one entry a node, kept between frames so that the sweep does not
+    /// allocate it each time. See [`LIST_ROW_NODE_LINGER_BUDGET`].
+    lingering_claims: Vec<u64>,
     /// Nodes another node took a child from. Taffy detaches a child from its
     /// old parent when a new one is given it, so the old parent no longer
     /// holds the tree it was laid out with. Requesting it again writes its
@@ -96,6 +100,19 @@ pub(crate) struct LayoutRetention {
 /// How many frames a node of a list row is kept unclaimed before it is
 /// released. See [`RetainedNode::lingers`].
 const LIST_ROW_NODE_LINGER_FRAMES: u64 = 240;
+
+/// The most nodes of list rows kept unclaimed at the end of a frame. Past it,
+/// the nodes claimed longest ago are released first, a frame's worth at a
+/// time, so the nodes one frame laid out together go together.
+///
+/// The frame count alone bounds nothing: a list whose rows are replaced as
+/// fast as it lays them out, a log appending rows that are each a new view,
+/// lays out every frame a set of rows no frame comes back to, and keeps the
+/// nodes of all of them for 240 frames. A window draws no frame while it is at
+/// rest, so the nodes the last 240 frames of such a burst laid out are kept
+/// until the window draws 240 more. The budget is applied in the frame that
+/// lays the rows out, so it holds at rest without a frame to apply it.
+const LIST_ROW_NODE_LINGER_BUDGET: usize = 2048;
 
 /// The leaves a layout computation measured, each with the width it was last
 /// measured at: the width it was given, or the definite width it was offered,
@@ -946,18 +963,42 @@ pub(crate) fn release_unclaimed_nodes(engine: &mut TaffyLayoutEngine) {
         let unstretched_styles = &mut retention.unstretched_styles;
         let robbed_parents = &mut retention.robbed_parents;
         let freed = &mut retention.stats.nodes_freed;
-        retention.retained.retain(|_, node| {
-            if node.claimed_in_frame == frame
-                || node.lingers && frame - node.claimed_in_frame < LIST_ROW_NODE_LINGER_FRAMES
-            {
-                return true;
-            }
+        let lingering = &mut retention.lingering_claims;
+        lingering.clear();
+        let mut release = |node: &RetainedNode| {
             unstretched_styles.remove(&node.id);
             robbed_parents.remove(&node.id);
             remove_node(taffy, node.id);
             *freed += 1;
+        };
+        retention.retained.retain(|_, node| {
+            if node.claimed_in_frame == frame {
+                return true;
+            }
+            if node.lingers && frame - node.claimed_in_frame < LIST_ROW_NODE_LINGER_FRAMES {
+                lingering.push(node.claimed_in_frame);
+                return true;
+            }
+            release(node);
             false
         });
+
+        // Over the budget, the nodes of the frame whose rows would take the
+        // kept nodes past it go, and those of every frame before it.
+        if lingering.len() > LIST_ROW_NODE_LINGER_BUDGET {
+            let (_, &mut first_over, _) =
+                lingering.select_nth_unstable_by(LIST_ROW_NODE_LINGER_BUDGET, |a, b| b.cmp(a));
+            retention.retained.retain(|_, node| {
+                if node.claimed_in_frame == frame
+                    || !node.lingers
+                    || node.claimed_in_frame > first_over
+                {
+                    return true;
+                }
+                release(node);
+                false
+            });
+        }
     }
 
     retention.claimed_this_frame = 0;
