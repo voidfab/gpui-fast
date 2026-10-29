@@ -26,7 +26,10 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow};
 use cocoa::{
-    appkit::{NSEvent, NSEventType, NSView, NSViewHeightSizable, NSViewWidthSizable},
+    appkit::{
+        NSEvent, NSEventType, NSView, NSViewHeightSizable, NSViewMaxXMargin, NSViewMinYMargin,
+        NSViewWidthSizable,
+    },
     base::{id, nil},
     foundation::{NSPoint, NSRect, NSSize},
 };
@@ -548,6 +551,12 @@ pub(crate) fn create_native_surface(
         let view =
             NSView::initWithFrame_(view, NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.)));
         anyhow::ensure!(!view.is_null(), "failed to create native surface container");
+        // The window's view is unflipped, so a subview with no autoresizing mask
+        // keeps its distance from the bottom edge: a window resize would carry
+        // the container (and the native view in it) down with the bottom edge
+        // until the next frame places it again from the top. Anchor it to the
+        // top-left, where its bounds are measured from.
+        view.setAutoresizingMask_(NSViewMinYMargin | NSViewMaxXMargin);
         view.setWantsLayer(YES);
         let layer: id = msg_send![view, layer];
         let _: () = msg_send![layer, setMasksToBounds: YES];
