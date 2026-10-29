@@ -190,8 +190,9 @@ impl MetalRenderer {
         layer.set_maximum_drawable_count(3);
         // Allow texture reading for visual tests and UI automation screenshots
         // (captures without ScreenCaptureKit). Only debug builds pay the
-        // presentation cost, even when `test-support` is compiled in.
-        #[cfg(all(feature = "test-support", debug_assertions))]
+        // presentation cost, even when `test-support` is compiled in. A shader
+        // effect (vulpine) copies what the frame drew under it, so it reads too.
+        #[cfg(any(all(feature = "test-support", debug_assertions), feature = "vulpine-effect"))]
         layer.set_framebuffer_only(false);
         // metal-rs doesn't bind these setters, so view the same object through
         // objc2's typed CAMetalLayer binding.
