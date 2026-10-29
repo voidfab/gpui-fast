@@ -18,6 +18,9 @@ bench-support = ["gpui/bench-support"]
 test-support = ["gpui/test-support"]
 runtime_shaders = []
 font-kit = ["dep:font-kit", "dep:core-text", "dep:objc2-core-text", "dep:pathfinder_geometry"]
+# Vendoring only, not for upstream (vulpine BT12): surface-bgra.patch stays off unless a build asks for it (the
+# published crate's behavior, a panic on a BGRA buffer); apps/native-kit/patches/upstream-harness turns it on.
+upstream-surface-bgra = []
 
 [dependencies]
 gpui.workspace = true
