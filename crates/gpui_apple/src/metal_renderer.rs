@@ -221,8 +221,9 @@ impl MetalRenderer {
         layer.setMaximumDrawableCount(3);
         // Allow texture reading for visual tests and UI automation screenshots
         // (captures without ScreenCaptureKit). Only debug builds pay the
-        // presentation cost, even when `test-support` is compiled in.
-        #[cfg(all(feature = "test-support", debug_assertions))]
+        // presentation cost, even when `test-support` is compiled in. A shader
+        // effect (vulpine) copies what the frame drew under it, so it reads too.
+        #[cfg(any(all(feature = "test-support", debug_assertions), feature = "vulpine-effect"))]
         layer.setFramebufferOnly(false);
         layer.setAllowsNextDrawableTimeout(false);
         layer.setNeedsDisplayOnBoundsChange(true);
