@@ -48,7 +48,8 @@ use objc::{
 use objc2::{MainThreadMarker, runtime::AnyObject};
 use objc2_app_kit::{
     NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWorkspace,
-    NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    NSWorkspaceDidWakeNotification, NSWorkspaceScreensDidWakeNotification,
+    NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::NSActivityOptions;
 use parking_lot::Mutex;
@@ -168,6 +169,11 @@ unsafe fn build_classes() {
             decl.add_method(
                 sel!(onSystemWake:),
                 on_system_wake as extern "C" fn(&mut Object, Sel, id),
+            );
+
+            decl.add_method(
+                sel!(onDisplayLinksWake:),
+                on_display_links_wake as extern "C" fn(&mut Object, Sel, id),
             );
 
             decl.register()
@@ -1327,6 +1333,7 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
 
         // SAFETY: `this` is a live Objective-C object; only the pointer's type changes.
         let observer = &*(this as *mut Object as *const AnyObject);
+        register_display_link_wake_observers(observer);
         let platform = get_mac_platform(this);
         let callback = {
             let mut state = platform.0.lock();
@@ -1341,6 +1348,43 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
         if let Some(callback) = callback {
             callback();
         }
+    }
+}
+
+/// System wake, screen wake and session activation restart every window's
+/// display link (`window::restart_display_links`): CoreVideo can stop a link
+/// across them without a screen or occlusion notification. Registered for
+/// every app, unlike the power observers, which follow the app's callbacks.
+/// `observer` must be the app delegate, whose class declares
+/// `onDisplayLinksWake:` (see `build_classes`).
+fn register_display_link_wake_observers(observer: &AnyObject) {
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: the selector is declared on the delegate class with the
+    // notification-handler signature these observers are invoked with.
+    unsafe {
+        for name in [
+            NSWorkspaceDidWakeNotification,
+            NSWorkspaceScreensDidWakeNotification,
+            NSWorkspaceSessionDidBecomeActiveNotification,
+        ] {
+            center.addObserver_selector_name_object(
+                observer,
+                objc2::sel!(onDisplayLinksWake:),
+                Some(name),
+                None,
+            );
+        }
+    }
+}
+
+extern "C" fn on_display_links_wake(_: &mut Object, _: Sel, _: id) {
+    // Outside the AppKit callback and any window's lock: on the main queue's next turn.
+    unsafe {
+        DispatchQueue::main().exec_async_f(ptr::null_mut(), restart);
+    }
+
+    extern "C" fn restart(_: *mut c_void) {
+        crate::window::restart_display_links();
     }
 }
 
