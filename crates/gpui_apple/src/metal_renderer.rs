@@ -1469,7 +1469,8 @@ impl MetalRenderer {
             // plane, full color: a renderer's or a compositor's output), sampled
             // as it is.
             let pixel_format = CVPixelBufferGetPixelFormatType(image_buffer);
-            let bgra = pixel_format == kCVPixelFormatType_32BGRA;
+            let bgra =
+                cfg!(feature = "upstream-surface-bgra") && pixel_format == kCVPixelFormatType_32BGRA;
             anyhow::ensure!(
                 bgra || pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
                 "unsupported surface pixel format: {pixel_format:#x} \
@@ -2240,6 +2241,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "upstream-surface-bgra"), ignore = "upstream-surface-bgra is off")]
     fn render_bgra_core_video_surface() {
         let surface_properties_key = unsafe { kCVPixelBufferIOSurfacePropertiesKey };
         let attributes = CFDictionary::from_slices(
