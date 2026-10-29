@@ -104,7 +104,11 @@ const LIST_ROW_NODE_LINGER_FRAMES: u64 = 240;
 /// tree's storage grows to hold, each doubling a reallocation inside one
 /// frame's layout. The rows last laid out, those a layer shows and those
 /// around them, are the ones a repaint or a scroll back asks for again.
-pub(crate) const LIST_ROW_NODE_LINGER_MAX: usize = 8192;
+///
+/// vulpine (list-row-linger, FOX9-af37a6) keeps 2,048, the budget its kit
+/// measured for a log whose rows are each a new view: upstream's 8,192 is the
+/// same sweep with a larger bound.
+pub(crate) const LIST_ROW_NODE_LINGER_MAX: usize = 2048;
 
 /// The age below which unclaimed row nodes are kept in `frame`: at most
 /// [`LIST_ROW_NODE_LINGER_FRAMES`], and less while keeping every node that
