@@ -198,6 +198,15 @@ pub(crate) fn draw_primitives_to_texture(
                     return Err(error);
                 }
             }
+            PrimitiveBatch::GpuPaints(range) => crate::gpu_painter::draw(
+                renderer,
+                &scene.gpu_paints[range],
+                texture,
+                &command_buffer,
+                &mut command_encoder,
+                viewport_size,
+                &[],
+            )?,
             PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
         }
     }

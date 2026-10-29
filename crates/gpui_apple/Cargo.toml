@@ -47,6 +47,9 @@ image.workspace = true
 libc.workspace = true
 log.workspace = true
 mach2.workspace = true
+# vulpine (FOX9-f0a295): the in-frame GPU painter's contexts are written in the metal crate, which painters name
+# through `gpui_apple::metal`; upstream's renderer itself moved to objc2-metal.
+metal = "0.33"
 objc2.workspace = true
 objc2-core-foundation = { workspace = true, features = ["std", "CFData", "CFDictionary", "CFString", "CFNumber", "CFBase", "CFCGTypes"] }
 objc2-core-graphics = { workspace = true, features = ["CGColorSpace"] }
