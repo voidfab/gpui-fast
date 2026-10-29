@@ -725,6 +725,31 @@ const LINK_RETRY_MAX: Duration = Duration::from_secs(1);
 /// order-out. A window that stays covered keeps its link only this long (it parks after two idle requests anyway).
 const SHOW_INTENT_GRACE: Duration = Duration::from_millis(500);
 
+/// Vendoring only, test-only, not for upstream (vulpine CH10, FOX9-9368a7): with the `test-draw-occluded` feature and
+/// `VULPINE_TEST_DRAW_OCCLUDED=1` in the environment, every window counts as occlusion-visible, so its display link
+/// runs and GPUI draws while the lock screen (or an order-out, or a minimize) occludes it. Lanes run their on-screen
+/// proofs on a private virtual display while the session is locked this way. Read once; without the feature the
+/// switch is a constant `false` and the variable does nothing.
+#[cfg(feature = "test-draw-occluded")]
+fn draw_occluded() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VULPINE_TEST_DRAW_OCCLUDED").is_some_and(|v| v == "1"))
+}
+
+#[cfg(not(feature = "test-draw-occluded"))]
+const fn draw_occluded() -> bool {
+    false
+}
+
+/// The occlusion gate every start, notification and visibility read goes through: the documented visible bit, or the
+/// test-only switch above.
+fn occlusion_visible(native_window: &NSWindow) -> bool {
+    draw_occluded()
+        || native_window
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible)
+}
+
 /// The display link is parked after this many frame requests in a row in which GPUI asked for no further frame (no
 /// dirty view, no next-frame callback). Two, so a draw's own follow-up request does not stop and restart the link.
 const PARK_AFTER_IDLE_FRAMES: u32 = 2;
@@ -879,7 +904,11 @@ impl MacWindowState {
             return;
         }
         let screen: *mut AnyObject = unsafe { msg_send![self.native_window, screen] };
-        let Some(display_id) = display_id_for_screen(screen) else {
+        let screen = display_id_for_screen(screen);
+        // With the test-only switch on, a hidden window has no screen; it runs on the main display's link.
+        let screen = screen
+            .or_else(|| draw_occluded().then(|| core_graphics::display::CGDisplay::main().id));
+        let Some(display_id) = screen else {
             // AppKit can temporarily report no screen while displays are being reconfigured.
             self.retry_display_link();
             return;
@@ -910,9 +939,7 @@ impl MacWindowState {
     /// link for those hidden windows, so it is not ported (FOX9-ca64b9; the window_did_change_occlusion_state and
     /// visibility reads follow the same rule).
     fn is_occlusion_visible(&self) -> bool {
-        self.native_window()
-            .occlusionState()
-            .contains(NSWindowOcclusionState::Visible)
+        occlusion_visible(self.native_window())
     }
 
     /// Whether an order-front's show intent is still waiting for its occlusion notification.
@@ -3214,11 +3241,7 @@ pub(crate) extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_even
 }
 
 fn visibility(state: &MacWindowState) -> WindowVisibility {
-    let is_visible = state
-        .native_window()
-        .occlusionState()
-        .contains(NSWindowOcclusionState::Visible);
-    if is_visible {
+    if occlusion_visible(state.native_window()) {
         WindowVisibility::Visible
     } else {
         WindowVisibility::Hidden
@@ -3404,11 +3427,7 @@ extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mu
     // running already; starting it again would unsubscribe and resubscribe it and drop its next vsync.
     let prestarted =
         lock.show_intent.take().is_some() && !lock.frame_demand.parked.load(Ordering::Acquire);
-    if lock
-        .native_window()
-        .occlusionState()
-        .contains(NSWindowOcclusionState::Visible)
-    {
+    if occlusion_visible(lock.native_window()) {
         lock.move_traffic_light();
         if !prestarted {
             lock.start_display_link();
