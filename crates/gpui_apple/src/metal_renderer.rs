@@ -48,6 +48,15 @@ const PATH_SAMPLE_COUNT: u32 = 4;
 const INSTANCE_BUFFER_ALIGNMENT: usize = 256;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 
+// vulpine (FOX9-c83a7e): wide gamut, an RGBA16Float drawable tagged extended sRGB (metal_renderer/wide_gamut.rs).
+mod wide_gamut;
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+pub use wide_gamut::{WideReadback, take_wide_readback};
+pub use wide_gamut::{
+    NARROW_FORMAT, WIDE_FORMAT, layer_is_extended_srgb, set_headless_wide_gamut, set_wide_gamut,
+    wide_gamut,
+};
+
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
 pub type Renderer = MetalRenderer;
 
@@ -156,6 +165,8 @@ pub struct MetalRenderer {
     pub(crate) path_intermediate_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     pub(crate) path_intermediate_msaa_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     path_sample_count: u32,
+    /// The drawable's, every pipeline's and every intermediate's format (vulpine, FOX9-c83a7e: wide_gamut.rs).
+    pixel_format: MTLPixelFormat,
     /// Offscreen render target reused across `render_scene` calls when
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -207,8 +218,9 @@ impl MetalRenderer {
         use_display_p3: bool,
     ) {
         layer.setDevice(Some(device));
-        layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        if use_display_p3 {
+        wide_gamut::configure_layer_format(layer);
+        // vulpine: a wide layer is tagged extended sRGB, which covers Display P3; the P3 tag applies to the 8-bit one.
+        if use_display_p3 && layer.pixelFormat() != wide_gamut::WIDE_FORMAT {
             // SAFETY: The constant is extern, from Core Graphics
             let display_p3_name = unsafe { kCGColorSpaceDisplayP3 };
             if let Some(display_p3_color_space) = CGColorSpace::with_name(Some(display_p3_name)) {
@@ -283,6 +295,7 @@ impl MetalRenderer {
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     ) -> Result<Self> {
+        let pixel_format = wide_gamut::initial_format(layer.as_deref());
         #[cfg(feature = "runtime_shaders")]
         let library = device
             .newLibraryWithSource_options_error(
@@ -344,7 +357,7 @@ impl MetalRenderer {
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
             PATH_SAMPLE_COUNT,
         )?;
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
@@ -353,7 +366,7 @@ impl MetalRenderer {
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -361,7 +374,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -369,7 +382,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -377,7 +390,7 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -385,7 +398,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -393,7 +406,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -401,7 +414,7 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
         let surfaces_bgra_pipeline_state = build_pipeline_state(
             &device,
@@ -409,7 +422,7 @@ impl MetalRenderer {
             "surfaces_bgra",
             "surface_vertex",
             "surface_bgra_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
         )?;
 
         let command_queue = crate::fast::dynamic_textures::command_queue(&device)?;
@@ -458,6 +471,7 @@ impl MetalRenderer {
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
+            pixel_format,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
             fast_layers: crate::fast::layers::TileCache::default(),
@@ -574,7 +588,7 @@ impl MetalRenderer {
             texture_descriptor.setWidth(size.width.0 as usize);
             texture_descriptor.setHeight(size.height.0 as usize);
         }
-        texture_descriptor.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.setPixelFormat(self.pixel_format);
         texture_descriptor.setStorageMode(MTLStorageMode::Private);
         texture_descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
         let intermediate_texture = self
@@ -623,6 +637,7 @@ impl MetalRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
+        self.follow_wide_gamut();
         let layer = match &self.layer {
             Some(l) => l.clone(),
             None => {
@@ -742,6 +757,7 @@ impl MetalRenderer {
     /// use `render_scene_to_image()` instead.
     #[cfg(any(test, feature = "test-support"))]
     pub fn render_to_image(&mut self, scene: &Scene) -> Result<RgbaImage> {
+        self.follow_wide_gamut();
         let layer = self
             .layer
             .clone()
@@ -771,6 +787,7 @@ impl MetalRenderer {
 
         // Headless callers do not have a Cocoa event-loop pool to release
         // autoreleased command buffers and render-pass descriptors.
+        self.follow_wide_gamut();
         objc2::rc::autoreleasepool(|_| {
             self.update_path_intermediate_textures(size)?;
             self.render_offscreen(scene, size)
@@ -791,7 +808,7 @@ impl MetalRenderer {
             texture_descriptor.setWidth(size.width.0 as usize);
             texture_descriptor.setHeight(size.height.0 as usize);
         }
-        texture_descriptor.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.setPixelFormat(self.pixel_format);
         texture_descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
         // Like the atlas, only Apple GPUs can create shared textures on macOS;
         // Intel Macs cannot, even with unified memory. iOS has no managed storage.
@@ -838,6 +855,7 @@ impl MetalRenderer {
             anyhow::bail!("Invalid size for render_scene: {:?}", size);
         }
 
+        self.follow_wide_gamut();
         objc2::rc::autoreleasepool(|_| {
             self.update_path_intermediate_textures(size)?;
 
@@ -851,7 +869,7 @@ impl MetalRenderer {
                     texture_descriptor.setWidth(size.width.0 as usize);
                     texture_descriptor.setHeight(size.height.0 as usize);
                 }
-                texture_descriptor.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+                texture_descriptor.setPixelFormat(self.pixel_format);
                 texture_descriptor
                     .setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
                 texture_descriptor.setStorageMode(MTLStorageMode::Private);
@@ -1633,6 +1651,9 @@ pub(crate) fn new_command_encoder_for_texture(
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 fn read_texture_to_image(texture: &ProtocolObject<dyn MTLTexture>) -> Result<RgbaImage> {
+    if texture.pixelFormat() == WIDE_FORMAT {
+        return wide_gamut::read_wide_texture(texture);
+    }
     let width = texture.width() as u32;
     let height = texture.height() as u32;
     let bytes_per_row = width as usize * 4;

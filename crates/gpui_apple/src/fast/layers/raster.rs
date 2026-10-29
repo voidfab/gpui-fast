@@ -27,16 +27,13 @@ use objc2_core_video::CVMetalTexture;
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
-    MTLPixelFormat, MTLRenderCommandEncoder,
+    MTLRenderCommandEncoder,
 };
 
 use crate::metal_renderer::{
     InstanceBindings, InstanceBufferWriter, MetalRenderer, SurfaceBounds,
     new_command_encoder_for_texture,
 };
-
-/// The pixel format of tiles: the drawable's and every pipeline's.
-const TILE_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
 
 /// Forwarded to by `MetalRenderer::render_frame` before it encodes `scene`:
 /// rasterizes the layer tiles `scene` needs that the cache lacks, and notes
@@ -52,7 +49,10 @@ pub(crate) fn rasterize_tiles(renderer: &mut MetalRenderer, scene: &Scene) {
     if planned.is_empty() {
         return;
     }
-    cache.prepare(&renderer.device, TILE_FORMAT, &scene.layers, &planned);
+    // Tiles are the drawable's format, every pipeline's (vulpine, FOX9-c83a7e: wide gamut).
+    let format = renderer.pixel_format();
+    let cache = &mut renderer.fast_layers;
+    cache.prepare(&renderer.device, format, &scene.layers, &planned);
     if let Err(error) = encode(renderer, scene, &planned) {
         log::error!("failed to rasterize scroll layer tiles: {error:#}");
         // The tiles this frame was to rasterize were not.
