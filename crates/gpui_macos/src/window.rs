@@ -1542,9 +1542,43 @@ impl Drop for MacWindow {
                     }
                     let _: () = msg_send![window, close];
                     let _: *mut AnyObject = msg_send![window, autorelease];
+                    // This task runs between AppKit's events, so the window
+                    // lands in the autorelease pool AppKit keeps around the event
+                    // it waits for, which is drained only when an event arrives.
+                    // An app that takes none (an Accessory app that is not
+                    // frontmost) keeps the closed window, its content view and its
+                    // CAMetalLayer until then. Wake it once the close has settled.
+                    DispatchQueue::main().exec_async_f(ptr::null_mut(), post_wake_event);
                 }
             })
             .detach();
+    }
+}
+
+/// Posts one application-defined event to this app's queue: AppKit takes it,
+/// finishes that pass of its event loop and drains the autorelease pool it keeps
+/// around the event. `MacWindow::drop` queues it one main-queue block after the
+/// close: AppKit's `close` leaves work for the run loop's next pass, and an event
+/// posted from the close task itself leaves the window alive.
+extern "C" fn post_wake_event(_: *mut c_void) {
+    unsafe {
+        // Subtype 0 is NSWindowExposedEventType.
+        let event: *mut AnyObject = msg_send![
+            class!(NSEvent),
+            otherEventWithType: NSEventType::ApplicationDefined,
+            location: NSPoint::new(0., 0.),
+            modifierFlags: NSEventModifierFlags::empty(),
+            timestamp: 0.0f64,
+            windowNumber: 0 as NSInteger,
+            context: ptr::null_mut::<AnyObject>(),
+            subtype: 0i16,
+            data1: 0 as NSInteger,
+            data2: 0 as NSInteger
+        ];
+        if !event.is_null() {
+            let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![app, postEvent: event, atStart: Bool::NO];
+        }
     }
 }
 
