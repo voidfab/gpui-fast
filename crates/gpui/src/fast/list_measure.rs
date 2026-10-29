@@ -126,6 +126,9 @@ pub(crate) fn defers_width_change(state: &mut StateInner) -> bool {
         old_items.iter().map(|item| ListItem::Unmeasured {
             size_hint: item.size_hint(),
             focus_handle: item.focus_handle(),
+            // vulpine list-remeasure-range: a remeasure_items request
+            // outlives the width change.
+            measure_next: item.measures_next(),
         }),
         (),
     );
@@ -227,9 +230,11 @@ fn rescale_estimates(state: &mut StateInner, old_items: &SumTree<ListItem>) {
             ListItem::Unmeasured {
                 size_hint: Some(hint),
                 focus_handle,
+                measure_next,
             } if old.size_hint() == Some(*hint) => ListItem::Unmeasured {
                 size_hint: Some(size(hint.width, hint.height * ratio)),
                 focus_handle: focus_handle.clone(),
+                measure_next: *measure_next,
             },
             _ => new.clone(),
         })
