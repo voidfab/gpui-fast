@@ -1564,9 +1564,41 @@ impl Drop for MacWindow {
                     }
                     window.close();
                     window.autorelease();
+                    // This task runs between AppKit's events, so the window
+                    // lands in the autorelease pool AppKit keeps around the event
+                    // it waits for, which is drained only when an event arrives.
+                    // An app that takes none (an Accessory app that is not
+                    // frontmost) keeps the closed window, its content view and its
+                    // CAMetalLayer until then. Wake it once the close has settled.
+                    DispatchQueue::main().exec_async_f(ptr::null_mut(), post_wake_event);
                 }
             })
             .detach();
+    }
+}
+
+/// Posts one application-defined event to this app's queue: AppKit takes it,
+/// finishes that pass of its event loop and drains the autorelease pool it keeps
+/// around the event. `MacWindow::drop` queues it one main-queue block after the
+/// close: AppKit's `close` leaves work for the run loop's next pass, and an event
+/// posted from the close task itself leaves the window alive.
+extern "C" fn post_wake_event(_: *mut c_void) {
+    unsafe {
+        let event = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            nil,
+            NSEventType::NSApplicationDefined,
+            NSPoint::new(0., 0.),
+            NSEventModifierFlags::empty(),
+            0.,
+            0,
+            nil,
+            cocoa::appkit::NSEventSubtype::NSWindowExposedEventType,
+            0,
+            0,
+        );
+        if !event.is_null() {
+            NSApplication::sharedApplication(nil).postEvent_atStart_(event, NO);
+        }
     }
 }
 
