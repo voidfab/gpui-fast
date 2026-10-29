@@ -1267,6 +1267,8 @@ pub struct Window {
     pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
     pub(crate) fast_composition: crate::fast::composition::WindowCompositionHandle,
+    /// vulpine (FOX9-f0a295): the GPU painters registered on this window, told when it goes.
+    pub(crate) gpu_painters: crate::GpuPainterRegistry,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
@@ -2181,6 +2183,7 @@ impl Window {
             fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
             fast_composition: crate::fast::composition::WindowCompositionHandle::default(),
+            gpu_painters: crate::GpuPainterRegistry::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
@@ -5236,6 +5239,50 @@ impl Window {
             content_mask,
             image_buffer,
         });
+    }
+
+    /// vulpine (FOX9-f0a295): registers an application GPU painter on this window. The returned handle can only be
+    /// used with this window; the painter is told when the window goes ([`crate::GpuResetReason`]).
+    pub fn register_gpu_painter<Snapshot: Send + Sync + 'static>(
+        &mut self,
+        painter: crate::GpuPainter<Snapshot>,
+    ) -> Result<crate::GpuPainterHandle<Snapshot>> {
+        let (handle, registration) = painter.register(self.handle);
+        self.gpu_painters.register(registration);
+        Ok(handle)
+    }
+
+    /// vulpine (FOX9-f0a295): queues application GPU drawing at the current z-index, clipped by the current content
+    /// mask, with the current opacity. Call during the paint phase. The scene keeps `data` for the backend's drawing
+    /// callback, including when a cached view replays it; the painter is not called here. What is painted after it
+    /// (a later sibling, a deferred popover) draws over it.
+    pub fn paint_gpu<Snapshot: Send + Sync + 'static>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        handle: &crate::GpuPainterHandle<Snapshot>,
+        data: Arc<Snapshot>,
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+        anyhow::ensure!(
+            handle.handle.owner().window_id() == self.handle.window_id(),
+            "GPU painter belongs to another window"
+        );
+        let scale_factor = self.scale_factor();
+        let opacity = self.element_opacity();
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        self.next_frame.scene.insert_primitive(crate::GpuPaintSurface {
+            order: 0,
+            bounds,
+            content_mask,
+            draw: crate::GpuPaintPrimitive {
+                handle: handle.handle.clone(),
+                data,
+                scale_factor,
+                opacity,
+            },
+        });
+        Ok(())
     }
 
     /// Removes an image from the sprite atlas.

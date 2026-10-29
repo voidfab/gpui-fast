@@ -297,6 +297,12 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_bounds(&surface.bounds, hasher);
             hash_mask(&surface.content_mask, tile, hasher);
         }
+        // vulpine (FOX9-f0a295): a GPU paint draws outside the scene too; layers draw it into the frame.
+        Primitive::GpuPaint(surface) => {
+            hasher.write_u8(8);
+            hash_bounds(&surface.bounds, hasher);
+            hash_mask(&surface.content_mask, tile, hasher);
+        }
     }
 }
 
