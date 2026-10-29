@@ -13,6 +13,7 @@ pub fn source(source: &str) -> String {
         "polychrome_sprite_fragment",
         "path_sprite_fragment",
         "surface_fragment",
+        "surface_bgra_fragment",
     ] {
         let start = source
             .find(&format!("fragment float4 {name}("))
