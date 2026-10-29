@@ -956,12 +956,13 @@ float4 hsla_to_rgba(Hsla hsla) {
   return rgba;
 }
 
+// Sign-preserving (vulpine, FOX9-c83a7e): a wide-gamut color's channels may be negative.
 float3 srgb_to_linear(float3 color) {
-  return pow(color, float3(2.2));
+  return sign(color) * pow(abs(color), float3(2.2));
 }
 
 float3 linear_to_srgb(float3 color) {
-  return pow(color, float3(1.0 / 2.2));
+  return sign(color) * pow(abs(color), float3(1.0 / 2.2));
 }
 
 // Converts a sRGB color to the Oklab color space.
@@ -974,9 +975,9 @@ float4 srgb_to_oklab(float4 color) {
   float m = 0.2119034982 * color.r + 0.6806995451 * color.g + 0.1073969566 * color.b;
   float s = 0.0883024619 * color.r + 0.2817188376 * color.g + 0.6299787005 * color.b;
 
-  float l_ = pow(l, 1.0/3.0);
-  float m_ = pow(m, 1.0/3.0);
-  float s_ = pow(s, 1.0/3.0);
+  float l_ = sign(l) * pow(abs(l), 1.0/3.0);
+  float m_ = sign(m) * pow(abs(m), 1.0/3.0);
+  float s_ = sign(s) * pow(abs(s), 1.0/3.0);
 
   return float4(
    	0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
