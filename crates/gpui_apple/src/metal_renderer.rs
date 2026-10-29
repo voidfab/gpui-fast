@@ -145,6 +145,8 @@ pub struct MetalRenderer {
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     headless_render_target: Option<metal::Texture>,
     pub(crate) fast_layers: crate::fast::layers::TileCache,
+    /// vulpine (FOX9-f0a295): the in-frame GPU painters' per-frame state.
+    pub(crate) gpu_paint: crate::gpu_painter::RendererState,
 }
 
 #[repr(C)]
@@ -454,6 +456,7 @@ impl MetalRenderer {
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
             fast_layers: crate::fast::layers::TileCache::default(),
+            gpu_paint: crate::gpu_painter::RendererState::default(),
         }
     }
 
@@ -586,6 +589,7 @@ impl MetalRenderer {
         viewport_size: Size<DevicePixels>,
     ) -> Result<metal::CommandBuffer> {
         crate::fast::layers::raster::rasterize_tiles(self, scene);
+        crate::gpu_painter::prepare_frame(self, scene, texture);
         let mut writer = InstanceBufferWriter::new(
             &self.device,
             &self.instance_buffer_pool,
@@ -610,6 +614,7 @@ impl MetalRenderer {
             texture,
             viewport_size,
         )?;
+        crate::gpu_painter::time_frame(&command_buffer);
 
         let instance_buffer_pool = self.instance_buffer_pool.clone();
         let instance_buffer = Cell::new(Some(writer.finish()));
@@ -849,6 +854,15 @@ impl MetalRenderer {
                     instance_bindings,
                     viewport_size,
                     command_encoder,
+                ),
+                PrimitiveBatch::GpuPaints(range) => crate::gpu_painter::draw(
+                    self,
+                    &scene.gpu_paints[range],
+                    texture,
+                    command_buffer,
+                    &mut command_encoder,
+                    viewport_size,
+                    &[],
                 ),
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
