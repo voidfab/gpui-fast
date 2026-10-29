@@ -1548,6 +1548,7 @@ impl Drop for MacWindow {
                     // An app that takes none (an Accessory app that is not
                     // frontmost) keeps the closed window, its content view and its
                     // CAMetalLayer until then. Wake it once the close has settled.
+                    #[cfg(feature = "upstream-close-release")]
                     DispatchQueue::main().exec_async_f(ptr::null_mut(), post_wake_event);
                 }
             })
@@ -1560,6 +1561,7 @@ impl Drop for MacWindow {
 /// around the event. `MacWindow::drop` queues it one main-queue block after the
 /// close: AppKit's `close` leaves work for the run loop's next pass, and an event
 /// posted from the close task itself leaves the window alive.
+#[cfg(feature = "upstream-close-release")]
 extern "C" fn post_wake_event(_: *mut c_void) {
     unsafe {
         // Subtype 0 is NSWindowExposedEventType.

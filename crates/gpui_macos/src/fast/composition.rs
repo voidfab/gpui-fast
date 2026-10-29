@@ -554,8 +554,10 @@ pub(crate) fn create_native_surface(
         // the container (and the native view in it) down with the bottom edge
         // until the next frame places it again from the top. Anchor it to the
         // top-left, where its bounds are measured from.
-        let _: () = msg_send![view, setAutoresizingMask: objc2_app_kit::NSAutoresizingMaskOptions::ViewMinYMargin
-                | objc2_app_kit::NSAutoresizingMaskOptions::ViewMaxXMargin];
+        if cfg!(feature = "upstream-surface-top-anchor") {
+            let _: () = msg_send![view, setAutoresizingMask: objc2_app_kit::NSAutoresizingMaskOptions::ViewMinYMargin
+                    | objc2_app_kit::NSAutoresizingMaskOptions::ViewMaxXMargin];
+        }
         let _: () = msg_send![view, setWantsLayer: Bool::YES];
         let layer: Id = msg_send![view, layer];
         let _: () = msg_send![layer, setMasksToBounds: Bool::YES];
