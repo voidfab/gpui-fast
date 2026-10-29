@@ -1292,7 +1292,9 @@ impl MetalRenderer {
             let format = CVPixelBufferGetPixelFormatType(image_buffer);
             let bgra = if format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
                 false
-            } else if format == kCVPixelFormatType_32BGRA {
+            } else if cfg!(feature = "upstream-surface-bgra")
+                && format == kCVPixelFormatType_32BGRA
+            {
                 true
             } else {
                 panic!(
