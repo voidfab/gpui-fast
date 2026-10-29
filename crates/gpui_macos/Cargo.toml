@@ -19,6 +19,11 @@ test-support = ["gpui/test-support", "gpui_apple/test-support"]
 runtime_shaders = ["gpui_apple/runtime_shaders"]
 font-kit = ["gpui_apple/font-kit"]
 screen-capture = ["gpui/screen-capture", "dep:objc2-core-graphics", "dep:objc2-core-media", "dep:objc2-screen-capture-kit"]
+# Vendoring only, not for upstream (vulpine BT12): the two upstream-ready patches stacked on this copy
+# (surface-top-anchor.patch, close-release.patch) stay off unless a build asks for them, so every window on the kit
+# keeps the published behavior until dk decides; apps/native-kit/patches/upstream-harness turns them on.
+upstream-surface-top-anchor = []
+upstream-close-release = []
 
 [dependencies]
 gpui.workspace = true
