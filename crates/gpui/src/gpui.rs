@@ -40,6 +40,8 @@ mod fast;
 mod geometry;
 mod gestures;
 mod global;
+// vulpine (FOX9-f0a295): the in-frame GPU painter.
+mod gpu_painter;
 mod input;
 mod inspector;
 mod interactive;
@@ -143,6 +145,7 @@ pub use fast::stats::LayoutStats;
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;
+pub use gpu_painter::*;
 pub use gpui_macros::{
     AppContext, IntoElement, Render, VisualContext, bench, property_test, register_action, test,
 };

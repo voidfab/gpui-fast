@@ -50,6 +50,8 @@ pub struct Scene {
     pub subpixel_sprites: Vec<SubpixelSprite>,
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
+    /// vulpine (FOX9-f0a295): application GPU draws, in draw order with the primitives.
+    pub gpu_paints: Vec<GpuPaintSurface>,
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
     pub(crate) fast_rounded_clip: crate::fast::rounded_clip::SceneClips,
     pub layers: crate::fast::layers::scene::SceneLayers,
@@ -70,6 +72,7 @@ impl Scene {
         self.subpixel_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
+        self.gpu_paints.clear();
         crate::fast::layers::scene::SceneLayers::clear(&mut self.layers);
     }
 
@@ -138,6 +141,10 @@ impl Scene {
                 surface.order = order;
                 self.surfaces.push(surface.clone());
             }
+            Primitive::GpuPaint(surface) => {
+                surface.order = order;
+                self.gpu_paints.push(surface.clone());
+            }
         }
         self.paint_operations
             .push(PaintOperation::Primitive(primitive));
@@ -186,6 +193,8 @@ impl Scene {
             polychrome_sprites_iter: self.polychrome_sprites.iter().peekable(),
             surfaces_start: 0,
             surfaces_iter: self.surfaces.iter().peekable(),
+            gpu_paints_start: 0,
+            gpu_paints_iter: self.gpu_paints.iter().peekable(),
         }
     }
 }
@@ -208,6 +217,7 @@ pub(crate) enum PrimitiveKind {
     SubpixelSprite,
     PolychromeSprite,
     Surface,
+    GpuPaint,
 }
 
 pub(crate) enum PaintOperation {
@@ -228,6 +238,7 @@ pub enum Primitive {
     SubpixelSprite(SubpixelSprite),
     PolychromeSprite(PolychromeSprite),
     Surface(PaintSurface),
+    GpuPaint(GpuPaintSurface),
 }
 
 #[expect(missing_docs)]
@@ -242,6 +253,7 @@ impl Primitive {
             Primitive::SubpixelSprite(sprite) => &sprite.bounds,
             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
             Primitive::Surface(surface) => &surface.bounds,
+            Primitive::GpuPaint(surface) => &surface.bounds,
         }
     }
 
@@ -255,6 +267,7 @@ impl Primitive {
             Primitive::SubpixelSprite(sprite) => &sprite.content_mask,
             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
             Primitive::Surface(surface) => &surface.content_mask,
+            Primitive::GpuPaint(surface) => &surface.content_mask,
         }
     }
 }
@@ -283,6 +296,8 @@ struct BatchIterator<'a> {
     polychrome_sprites_iter: Peekable<slice::Iter<'a, PolychromeSprite>>,
     surfaces_start: usize,
     surfaces_iter: Peekable<slice::Iter<'a, PaintSurface>>,
+    gpu_paints_start: usize,
+    gpu_paints_iter: Peekable<slice::Iter<'a, GpuPaintSurface>>,
 }
 
 impl<'a> Iterator for BatchIterator<'a> {
@@ -315,6 +330,10 @@ impl<'a> Iterator for BatchIterator<'a> {
             (
                 self.surfaces_iter.peek().map(|s| s.order),
                 PrimitiveKind::Surface,
+            ),
+            (
+                self.gpu_paints_iter.peek().map(|s| s.order),
+                PrimitiveKind::GpuPaint,
             ),
         ];
         orders_and_kinds.sort_by_key(|(order, kind)| (order.unwrap_or(u32::MAX), *kind));
@@ -461,6 +480,20 @@ impl<'a> Iterator for BatchIterator<'a> {
                 self.surfaces_start = surfaces_end;
                 Some(PrimitiveBatch::Surfaces(surfaces_start..surfaces_end))
             }
+            PrimitiveKind::GpuPaint => {
+                let start = self.gpu_paints_start;
+                let mut end = start + 1;
+                self.gpu_paints_iter.next();
+                while self
+                    .gpu_paints_iter
+                    .next_if(|surface| (surface.order, batch_kind) < max_order_and_kind)
+                    .is_some()
+                {
+                    end += 1;
+                }
+                self.gpu_paints_start = end;
+                Some(PrimitiveBatch::GpuPaints(start..end))
+            }
         }
     }
 }
@@ -493,6 +526,8 @@ pub enum PrimitiveBatch {
         range: Range<usize>,
     },
     Surfaces(Range<usize>),
+    /// vulpine (FOX9-f0a295): a range of [`Scene::gpu_paints`], drawn by their painters.
+    GpuPaints(Range<usize>),
 }
 
 impl PrimitiveBatch {
@@ -525,6 +560,7 @@ impl PrimitiveBatch {
                 )
             }
             Self::Surfaces(range) => format!("surfaces ({})", range.len()),
+            Self::GpuPaints(range) => format!("gpu paints ({})", range.len()),
         }
     }
 }
@@ -776,6 +812,25 @@ pub struct PaintSurface {
 impl From<PaintSurface> for Primitive {
     fn from(surface: PaintSurface) -> Self {
         Primitive::Surface(surface)
+    }
+}
+
+/// vulpine (FOX9-f0a295): an application GPU draw with scene ordering and clipping.
+#[derive(Clone, Debug)]
+pub struct GpuPaintSurface {
+    /// Ordering assigned by the scene.
+    pub order: DrawOrder,
+    /// Physical element bounds.
+    pub bounds: Bounds<ScaledPixels>,
+    /// Inherited physical clipping bounds.
+    pub content_mask: ContentMask<ScaledPixels>,
+    /// Painter and immutable frame snapshot.
+    pub draw: crate::GpuPaintPrimitive,
+}
+
+impl From<GpuPaintSurface> for Primitive {
+    fn from(surface: GpuPaintSurface) -> Self {
+        Primitive::GpuPaint(surface)
     }
 }
 
