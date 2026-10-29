@@ -24,6 +24,9 @@ screen-capture = ["gpui/screen-capture", "dep:objc2-core-media", "dep:objc2-scre
 # keeps the published behavior until dk decides; apps/native-kit/patches/upstream-harness turns them on.
 upstream-surface-top-anchor = []
 upstream-close-release = []
+# Vendoring only, test-only, not for upstream (vulpine CH10): with VULPINE_TEST_DRAW_OCCLUDED=1, windows draw while
+# occluded (the lock screen). native-kit's `test-draw-occluded` turns it on; no shipped window does.
+test-draw-occluded = []
 
 [dependencies]
 gpui.workspace = true
