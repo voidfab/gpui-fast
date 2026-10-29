@@ -34,7 +34,9 @@ use objc2_app_kit::{
     NSAppearanceNameVibrantLight, NSApplication, NSApplicationActivationPolicy,
     NSControlStateValueOn, NSCursor, NSDocumentController, NSEventModifierFlags, NSMenu,
     NSMenuItem, NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSScroller,
-    NSScrollerStyle, NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    NSScrollerStyle, NSWorkspace, NSWorkspaceDidWakeNotification,
+    NSWorkspaceScreensDidWakeNotification, NSWorkspaceSessionDidBecomeActiveNotification,
+    NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::{
     NSActivityOptions, NSArray, NSBundle, NSError, NSInteger, NSProcessInfo, NSString, NSURL,
@@ -155,6 +157,11 @@ unsafe fn build_classes() {
             decl.add_method(
                 sel!(onSystemWake:),
                 on_system_wake as extern "C-unwind" fn(_, Sel, *mut AnyObject),
+            );
+
+            decl.add_method(
+                sel!(onDisplayLinksWake:),
+                on_display_links_wake as extern "C-unwind" fn(_, Sel, *mut AnyObject),
             );
 
             decl.register()
@@ -1320,6 +1327,7 @@ extern "C-unwind" fn did_finish_launching(this: &AnyObject, _: Sel, _: *mut AnyO
             object: ptr::null_mut::<AnyObject>()
         ];
 
+        register_display_link_wake_observers(this);
         let platform = get_mac_platform(this);
         let callback = {
             let mut state = platform.0.lock();
@@ -1334,6 +1342,43 @@ extern "C-unwind" fn did_finish_launching(this: &AnyObject, _: Sel, _: *mut AnyO
         if let Some(callback) = callback {
             callback();
         }
+    }
+}
+
+/// System wake, screen wake and session activation restart every window's
+/// display link (`window::restart_display_links`): CoreVideo can stop a link
+/// across them without a screen or occlusion notification. Registered for
+/// every app, unlike the power observers, which follow the app's callbacks.
+/// `observer` must be the app delegate, whose class declares
+/// `onDisplayLinksWake:` (see `build_classes`).
+fn register_display_link_wake_observers(observer: &AnyObject) {
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: the selector is declared on the delegate class with the
+    // notification-handler signature these observers are invoked with.
+    unsafe {
+        for name in [
+            NSWorkspaceDidWakeNotification,
+            NSWorkspaceScreensDidWakeNotification,
+            NSWorkspaceSessionDidBecomeActiveNotification,
+        ] {
+            center.addObserver_selector_name_object(
+                observer,
+                objc2::sel!(onDisplayLinksWake:),
+                Some(name),
+                None,
+            );
+        }
+    }
+}
+
+extern "C-unwind" fn on_display_links_wake(_: &AnyObject, _: Sel, _: *mut AnyObject) {
+    // Outside the AppKit callback and any window's lock: on the main queue's next turn.
+    unsafe {
+        DispatchQueue::main().exec_async_f(ptr::null_mut(), restart);
+    }
+
+    extern "C" fn restart(_: *mut c_void) {
+        crate::window::restart_display_links();
     }
 }
 

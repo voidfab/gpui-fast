@@ -26,7 +26,6 @@ use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
 use core_graphics::display::CGDirectDisplayID;
 use ctor::ctor;
 use futures::channel::oneshot;
-use gpui_util::ResultExt;
 use objc2::{
     AnyThread, MainThreadMarker, class, msg_send,
     rc::{Retained, autoreleasepool},
@@ -469,6 +468,7 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
         );
 
         decl.add_method(sel!(close), close_window as extern "C" fn(_, Sel));
+        register_show_intent(&mut decl, superclass);
 
         decl.add_method(
             sel!(draggingEntered:),
@@ -697,6 +697,52 @@ pub(crate) struct MacWindowState {
     accesskit_adapter: Option<accesskit_macos::SubclassingAdapter>,
     // The parent window if this window is a sheet (Dialog kind)
     sheet_parent: Option<*mut AnyObject>,
+    // Idle parking: whether GPUI still wants frames, shared with the window's frame waker.
+    frame_demand: Arc<FrameDemand>,
+    // Frame requests in a row that found no demand; at `PARK_AFTER_IDLE_FRAMES` the link is parked.
+    idle_frames: u32,
+    // A start that could not run the link (refused by CoreVideo, or no screen during a display change) is retried
+    // by the platform: GPUI calls the waker only when a window becomes dirty, so a window left dirty by a failed
+    // start would never ask again. Retries in a row (the backoff), and whether one is pending.
+    link_retries: u32,
+    link_retry_pending: bool,
+    // Set when the window is dropped: nothing starts its link after that (the frame source calls into its view).
+    link_released: bool,
+    // This state, for the retry; set once the state is built.
+    this: Weak<Mutex<MacWindowState>>,
+    // When the window was last asked onto the screen while hidden (an order-front; see `SHOW_INTENT_GRACE`): until its
+    // occlusion notification arrives, a start runs the link although AppKit still reports the window occluded.
+    show_intent: Option<std::time::Instant>,
+}
+
+/// The first retry of a display link that did not start; each next one waits twice as long, up to `LINK_RETRY_MAX`.
+const LINK_RETRY_FIRST: Duration = Duration::from_millis(50);
+const LINK_RETRY_MAX: Duration = Duration::from_secs(1);
+
+/// How long an order-front's show intent lets a start run the link for a window AppKit still reports occluded. The
+/// window server's occlusion notification for a window just ordered front arrives about 25 ms later (panoply's
+/// shell-test measured GPUI's hide-to-first-frame at p50 42.3 ms for it); it clears the intent, and so does an
+/// order-out. A window that stays covered keeps its link only this long (it parks after two idle requests anyway).
+const SHOW_INTENT_GRACE: Duration = Duration::from_millis(500);
+
+/// The display link is parked after this many frame requests in a row in which GPUI asked for no further frame (no
+/// dirty view, no next-frame callback). Two, so a draw's own follow-up request does not stop and restart the link.
+const PARK_AFTER_IDLE_FRAMES: u32 = 2;
+
+/// Idle parking of a window's display link.
+///
+/// The display link used to run for as long as the window was visible, so an idle window still woke its process at
+/// the display's refresh rate (the link's io thread, then the main queue) to find nothing to draw. GPUI's
+/// `PlatformWindow::frame_waker` is the hook for platforms that stop requesting frames for idle windows (the web
+/// platform's `requestAnimationFrame` loop uses it): GPUI calls the waker whenever a window becomes dirty, when a
+/// next-frame callback is queued, and after a frame that left demand behind. Here `step` takes `demanded` before
+/// each frame request: a request with no demand since the last one and none left behind counts as idle, and after
+/// `PARK_AFTER_IDLE_FRAMES` of them the window unsubscribes from the display link (which stops when no window is
+/// subscribed). The waker restarts it.
+#[derive(Default)]
+pub(crate) struct FrameDemand {
+    demanded: AtomicBool,
+    parked: AtomicBool,
 }
 
 impl MacWindowState {
@@ -818,30 +864,127 @@ impl MacWindowState {
     }
 
     fn start_display_link(&mut self) {
+        if self.link_released || self.closed.load(Ordering::Acquire) {
+            return;
+        }
         self.stop_display_link();
-        if !self
-            .native_window()
-            .occlusionState()
-            .contains(NSWindowOcclusionState::Visible)
-        {
+        self.idle_frames = 0;
+        // Only a start that runs the link ends a parked spell (whatever its cause: the window shown, a screen change,
+        // a frame drawn synchronously, the waker); the link parks again once its requests find no demand. A start
+        // skipped for a hidden window or a missing screen, or refused by CoreVideo, leaves the link parked, so the
+        // next demand tries again instead of trusting a link that is not running.
+        self.frame_demand.parked.store(true, Ordering::Release);
+        if !self.is_occlusion_visible() && !self.showing() {
+            // The occlusion notification starts it once the window shows.
             return;
         }
         let screen: *mut AnyObject = unsafe { msg_send![self.native_window, screen] };
         let Some(display_id) = display_id_for_screen(screen) else {
             // AppKit can temporarily report no screen while displays are being reconfigured.
+            self.retry_display_link();
             return;
         };
         let data = self.native_view.as_ptr() as *mut c_void;
-        self.frame_source
+        let started = self
+            .frame_source
             .get_or_insert_with(|| WindowFrameSource::new(data, step))
-            .start(display_id)
-            .log_err();
+            .start(display_id);
+        match started {
+            Ok(()) => {
+                self.frame_demand.parked.store(false, Ordering::Release);
+                self.link_retries = 0;
+            }
+            Err(error) => {
+                if self.link_retries == 0 {
+                    log::error!("the display link did not start; retrying: {error:#}");
+                }
+                self.retry_display_link();
+            }
+        }
+    }
+
+    /// Only the documented visible bit (0x2) counts. Cap treats the undocumented 0x2000 as visible because macOS 26
+    /// showed it on visible background windows without 0x2; on macOS 26.5.1 CF4's probe saw 0x2000 on every GPUI
+    /// window in every state, with 0x2 whenever the window was on screen and without it only when it was ordered
+    /// out, minimized or off every screen (benchmarks/results/occlusion-bits-2026-10-24.md). Cap's rule would run the
+    /// link for those hidden windows, so it is not ported (FOX9-ca64b9; the window_did_change_occlusion_state and
+    /// visibility reads follow the same rule).
+    fn is_occlusion_visible(&self) -> bool {
+        self.native_window()
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible)
+    }
+
+    /// Whether an order-front's show intent is still waiting for its occlusion notification.
+    fn showing(&self) -> bool {
+        self.show_intent
+            .is_some_and(|at| at.elapsed() < SHOW_INTENT_GRACE)
+    }
+
+    /// Show intent (CF8, FOX9-d38438): the window is about to be ordered front while hidden, so its display link starts
+    /// now, before the order-front, instead of when the occlusion notification comes back from the window server, and
+    /// the content view is marked as needing display: at the end of this run-loop turn AppKit sends it
+    /// `displayLayer:`, whose frame GPUI draws synchronously and presents with the transaction that orders the window
+    /// in (the resize path's own draw). The display link carries the frames after it. Nothing changes for a window
+    /// already on screen, a second order-front of the same show, or a released window; with no frame wanted the link
+    /// parks as before.
+    fn start_display_link_for_show(&mut self) {
+        if self.link_released
+            || self.closed.load(Ordering::Acquire)
+            || self.is_occlusion_visible()
+            || self.showing()
+        {
+            return;
+        }
+        self.show_intent = Some(std::time::Instant::now());
+        self.start_display_link();
+        // `activate` asks for the same display before it orders a hidden window front.
+        let view = unsafe { &*self.native_view.as_ptr().cast::<NSView>() };
+        view.setNeedsDisplay(true);
+    }
+
+    /// Starts the link again after a start that did not run it: `LINK_RETRY_FIRST`, then twice as long each time up
+    /// to `LINK_RETRY_MAX`, until a start runs it, the window is hidden (its occlusion notification starts the link)
+    /// or the window goes. One retry is pending at a time.
+    fn retry_display_link(&mut self) {
+        if self.link_retry_pending {
+            return;
+        }
+        self.link_retry_pending = true;
+        let delay = LINK_RETRY_FIRST
+            .saturating_mul(1 << self.link_retries.min(5))
+            .min(LINK_RETRY_MAX);
+        self.link_retries = self.link_retries.saturating_add(1);
+        let timer = self.background_executor.timer(delay);
+        let window_state = self.this.clone();
+        self.foreground_executor
+            .spawn(async move {
+                timer.await;
+                let Some(state) = window_state.upgrade() else {
+                    return;
+                };
+                let mut lock = state.lock();
+                lock.link_retry_pending = false;
+                // Another start may have run the link meanwhile.
+                if lock.frame_demand.parked.load(Ordering::Acquire) {
+                    lock.start_display_link();
+                }
+            })
+            .detach();
     }
 
     fn stop_display_link(&mut self) {
         if let Some(frame_source) = self.frame_source.as_mut() {
             frame_source.stop();
         }
+    }
+
+    /// Stops the display link because no frame is wanted; the frame waker restarts it (see [`FrameDemand`]).
+    /// Unlike a stop for occlusion, a parked link is restarted by demand alone.
+    fn park_display_link(&mut self) {
+        self.stop_display_link();
+        self.idle_frames = 0;
+        self.frame_demand.parked.store(true, Ordering::Release);
     }
 
     fn is_maximized(&self) -> bool {
@@ -1127,7 +1270,15 @@ impl MacWindow {
                 closed: Arc::new(AtomicBool::new(false)),
                 accesskit_adapter: None,
                 sheet_parent: None,
+                frame_demand: Arc::new(FrameDemand::default()),
+                idle_frames: 0,
+                link_retries: 0,
+                link_retry_pending: false,
+                link_released: false,
+                this: Weak::new(),
+                show_intent: None,
             }));
+            state.lock().this = Arc::downgrade(&state);
             let mut window = Self(state, marker);
 
             (*native_window)
@@ -1375,6 +1526,7 @@ impl Drop for MacWindow {
         let window = this.native_window;
         let sheet_parent = this.sheet_parent.take();
         this.frame_source.take();
+        this.link_released = true;
         unsafe {
             let _: () = msg_send![this.native_window, setDelegate: ptr::null_mut::<AnyObject>()];
         }
@@ -1999,6 +2151,37 @@ impl PlatformWindow for MacWindow {
         }
     }
 
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let (demand, executor) = {
+            let lock = self.0.lock();
+            (lock.frame_demand.clone(), lock.foreground_executor.clone())
+        };
+        // Weak: GPUI keeps the waker in the window's invalidator, which the window state's own callbacks hold.
+        let window_state = Arc::downgrade(&self.0);
+        Some(Rc::new(move || {
+            demand.demanded.store(true, Ordering::Release);
+            if !demand.parked.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            let Some(state) = window_state.upgrade() else {
+                return;
+            };
+            // GPUI may wake from inside a platform callback that holds this lock; restart on the next turn then.
+            if let Some(mut lock) = state.try_lock() {
+                lock.start_display_link();
+                return;
+            }
+            let window_state = window_state.clone();
+            executor
+                .spawn(async move {
+                    if let Some(state) = window_state.upgrade() {
+                        state.lock().start_display_link();
+                    }
+                })
+                .detach();
+        }))
+    }
+
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.as_ref().lock().request_frame_callback = Some(callback);
     }
@@ -2456,6 +2639,30 @@ unsafe fn is_gpui_window(window: *mut AnyObject) -> bool {
     unsafe {
         msg_send![window, isKindOfClass: WINDOW_CLASS]
             || msg_send![window, isKindOfClass: PANEL_CLASS]
+    }
+}
+
+/// Restarts the display link of every GPUI window (main thread). The app delegate calls it after system wake, screen
+/// wake and session activation: CoreVideo can stop a link across those without the screen or occlusion
+/// notification a window restarts its link on, and a window whose link stopped behind its back never draws again.
+/// Every window stops first, so each display's shared link (it runs while any window subscribes) really stops and
+/// starts again. A window at rest parks again after two frame requests; a hidden one stays stopped.
+pub(crate) fn restart_display_links() {
+    let states: Vec<Arc<Mutex<MacWindowState>>> = unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let windows: *mut AnyObject = msg_send![app, windows];
+        let count: NSUInteger = msg_send![windows, count];
+        (0..count)
+            .map(|i| -> *mut AnyObject { msg_send![windows, objectAtIndex: i] })
+            .filter(|&window| is_gpui_window(window))
+            .map(|window| get_window_state(&*window))
+            .collect()
+    };
+    for state in &states {
+        state.lock().stop_display_link();
+    }
+    for state in &states {
+        state.lock().start_display_link();
     }
 }
 
@@ -3014,16 +3221,162 @@ fn report_visibility(window_state: &Arc<Mutex<MacWindowState>>) {
         .detach();
 }
 
+/// Show intent (CF8, FOX9-d38438): the order-front selectors a caller shows a hidden window with
+/// (`orderFrontRegardless`, the overlay's; `makeKeyAndOrderFront:`; `orderWindow:relativeTo:`, which `orderFront:`
+/// sends) start its display link before the window server orders it in, and `orderOut:` drops the intent. Each calls
+/// the superclass's own implementation after.
+unsafe fn register_show_intent(decl: &mut ClassBuilder, superclass: &AnyClass) {
+    let panel = superclass == class!(NSPanel);
+    unsafe {
+        if panel {
+            decl.add_method(
+                sel!(orderFrontRegardless),
+                order_front_regardless_panel as extern "C" fn(_, Sel),
+            );
+            decl.add_method(
+                sel!(makeKeyAndOrderFront:),
+                make_key_and_order_front_panel as extern "C" fn(_, Sel, *mut AnyObject),
+            );
+            decl.add_method(
+                sel!(orderWindow:relativeTo:),
+                order_window_panel as extern "C" fn(_, Sel, NSInteger, NSInteger),
+            );
+            decl.add_method(
+                sel!(orderOut:),
+                order_out_panel as extern "C" fn(_, Sel, *mut AnyObject),
+            );
+        } else {
+            decl.add_method(
+                sel!(orderFrontRegardless),
+                order_front_regardless_window as extern "C" fn(_, Sel),
+            );
+            decl.add_method(
+                sel!(makeKeyAndOrderFront:),
+                make_key_and_order_front_window as extern "C" fn(_, Sel, *mut AnyObject),
+            );
+            decl.add_method(
+                sel!(orderWindow:relativeTo:),
+                order_window_window as extern "C" fn(_, Sel, NSInteger, NSInteger),
+            );
+            decl.add_method(
+                sel!(orderOut:),
+                order_out_window as extern "C" fn(_, Sel, *mut AnyObject),
+            );
+        }
+    }
+}
+
+/// Runs `f` on the window's state when it has one and its lock is free: the ivar is null until `MacWindow::open` sets
+/// it (the first order-front comes after), and an order-front sent while GPUI holds the lock skips the pre-start (the
+/// occlusion notification still starts the link, as before).
+fn with_show_state(this: &AnyObject, f: impl FnOnce(&mut MacWindowState)) {
+    let raw = unsafe {
+        *this
+            .class()
+            .instance_variable(WINDOW_STATE_IVAR)
+            .expect("GPUI window state ivar")
+            .load::<*mut c_void>(this)
+    };
+    if raw.is_null() {
+        return;
+    }
+    let window_state = unsafe { get_window_state(this) };
+    if let Some(mut lock) = window_state.try_lock() {
+        f(&mut lock);
+    }
+}
+
+fn note_show_intent(this: &AnyObject) {
+    with_show_state(this, MacWindowState::start_display_link_for_show);
+}
+
+fn drop_show_intent(this: &AnyObject) {
+    with_show_state(this, |state| state.show_intent = None);
+}
+
+/// `NSWindowOut` in `orderWindow:relativeTo:`'s ordering mode.
+const NS_WINDOW_OUT: NSInteger = 0;
+
+extern "C" fn order_front_regardless_window(this: &AnyObject, _: Sel) {
+    note_show_intent(this);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSWindow)), orderFrontRegardless];
+    }
+}
+
+extern "C" fn order_front_regardless_panel(this: &AnyObject, _: Sel) {
+    note_show_intent(this);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSPanel)), orderFrontRegardless];
+    }
+}
+
+extern "C" fn make_key_and_order_front_window(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
+    note_show_intent(this);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSWindow)), makeKeyAndOrderFront: sender];
+    }
+}
+
+extern "C" fn make_key_and_order_front_panel(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
+    note_show_intent(this);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSPanel)), makeKeyAndOrderFront: sender];
+    }
+}
+
+extern "C" fn order_window_window(this: &AnyObject, _: Sel, place: NSInteger, other: NSInteger) {
+    if place == NS_WINDOW_OUT {
+        drop_show_intent(this);
+    } else {
+        note_show_intent(this);
+    }
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSWindow)), orderWindow: place, relativeTo: other];
+    }
+}
+
+extern "C" fn order_window_panel(this: &AnyObject, _: Sel, place: NSInteger, other: NSInteger) {
+    if place == NS_WINDOW_OUT {
+        drop_show_intent(this);
+    } else {
+        note_show_intent(this);
+    }
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSPanel)), orderWindow: place, relativeTo: other];
+    }
+}
+
+extern "C" fn order_out_window(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
+    drop_show_intent(this);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSWindow)), orderOut: sender];
+    }
+}
+
+extern "C" fn order_out_panel(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
+    drop_show_intent(this);
+    unsafe {
+        let _: () = msg_send![super(this, class!(NSPanel)), orderOut: sender];
+    }
+}
+
 extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mut AnyObject) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
+    // The window server has answered: the occlusion state decides from here on. A link the show intent started is
+    // running already; starting it again would unsubscribe and resubscribe it and drop its next vsync.
+    let prestarted =
+        lock.show_intent.take().is_some() && !lock.frame_demand.parked.load(Ordering::Acquire);
     if lock
         .native_window()
         .occlusionState()
         .contains(NSWindowOcclusionState::Visible)
     {
         lock.move_traffic_light();
-        lock.start_display_link();
+        if !prestarted {
+            lock.start_display_link();
+        }
     } else {
         lock.stop_display_link();
     }
@@ -3386,13 +3739,27 @@ extern "C" fn step(view: *mut c_void) {
                 (None, FrameRequestSource::NativeCallback),
                 |(at, source)| (Some(at), source),
             );
+        // The demand since the last request is what this request serves: data that arrived between two vsyncs
+        // dirtied the window then, not during this request, and the frame drawn for it is not an idle one.
+        let demand = lock.frame_demand.clone();
+        let served = demand.demanded.swap(false, Ordering::AcqRel);
         drop(lock);
         callback(RequestFrameOptions {
             signal_at,
             signal_source,
             ..Default::default()
         });
-        window_state.lock().request_frame_callback = Some(callback);
+        let mut lock = window_state.lock();
+        lock.request_frame_callback = Some(callback);
+        // GPUI calls the frame waker during the request when it wants another frame (see `FrameDemand`).
+        if served || demand.demanded.load(Ordering::Acquire) {
+            lock.idle_frames = 0;
+        } else {
+            lock.idle_frames += 1;
+            if lock.idle_frames >= PARK_AFTER_IDLE_FRAMES {
+                lock.park_display_link();
+            }
+        }
     }
 }
 
