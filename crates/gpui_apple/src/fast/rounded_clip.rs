@@ -106,6 +106,8 @@ pub(crate) fn draw(
         encoder,
     )?
     .end_encoding();
+    #[cfg(feature = "vulpine-effect")]
+    crate::fast::shader_effect::time_frame(command_buffer);
     Ok(command_buffer.to_owned())
 }
 
@@ -206,6 +208,17 @@ fn encode<'a>(
                             clips,
                             encoder,
                         )?;
+                        // vulpine: a group whose scene carries an effect's sentinels is shaded
+                        // over its bounds now, after its content and before what comes later.
+                        #[cfg(feature = "vulpine-effect")]
+                        if let Some(effect) =
+                            crate::fast::shader_effect::Effect::find(child, sprite.bounds)
+                        {
+                            encoder =
+                                effect.apply(renderer, texture, viewport, commands, encoder, |e| {
+                                    bind(e, clips, &renderer.device)
+                                });
+                        }
                         clips.pop();
                         renderer.fast_layers.note_composited(scene);
                     }

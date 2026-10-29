@@ -22,6 +22,9 @@ use objc2::MainThreadMarker;
 pub use dispatcher::{AppleActivity, AppleDispatcher};
 #[cfg(feature = "font-kit")]
 pub use text_system::AppleTextSystem;
+/// vulpine (FOX9-894bf2): the shader effect's frame GPU times, for its measurement runs.
+#[cfg(feature = "vulpine-effect")]
+pub use fast::shader_effect::take_frame_gpu_ms as vulpine_effect_frame_gpu_ms;
 
 #[inline]
 pub fn main_thread_marker() -> Option<MainThreadMarker> {
