@@ -248,6 +248,10 @@ pub(crate) enum ListItem {
     Unmeasured {
         size_hint: Option<Size<Pixels>>,
         focus_handle: Option<FocusHandle>,
+        /// Whether a list that measures all its items measures this one at
+        /// its next layout, shown or not: [`ListState::remeasure_items`]
+        /// named it.
+        measure_next: bool,
     },
     Measured {
         size: Size<Pixels>,
@@ -269,6 +273,16 @@ impl ListItem {
             ListItem::Measured { size, .. } => Some(*size),
             ListItem::Unmeasured { size_hint, .. } => *size_hint,
         }
+    }
+
+    fn measures_next(&self) -> bool {
+        matches!(
+            self,
+            ListItem::Unmeasured {
+                measure_next: true,
+                ..
+            }
+        )
     }
 
     fn focus_handle(&self) -> Option<FocusHandle> {
@@ -298,6 +312,9 @@ pub(crate) struct ListItemSummary {
     pub(crate) height: Pixels,
     has_focus_handles: bool,
     pub(crate) has_unknown_height: bool,
+    /// How many items are to be measured at the next layout, shown or not.
+    /// See [`ListState::remeasure_items`].
+    measure_next_count: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -391,6 +408,7 @@ impl ListState {
             .map(|item| ListItem::Unmeasured {
                 size_hint: Some(item.size_hint().unwrap_or(size_hint)),
                 focus_handle: item.focus_handle(),
+                measure_next: item.measures_next(),
             })
             .collect::<Vec<_>>();
         let mut tree = SumTree::default();
@@ -461,7 +479,14 @@ impl ListState {
         }
 
         // Rebuild the tree, replacing items in the range with
-        // Unmeasured copies that keep their focus handles.
+        // Unmeasured copies that keep their focus handles. A list that
+        // measures all its items, and has, measures these at the next layout,
+        // and only these: an item a splice left unmeasured is measured as the
+        // list reaches it, as it would have been without this call.
+        let measure_next = matches!(
+            state.measuring_behavior,
+            ListMeasuringBehavior::Measure(true)
+        );
         let new_items = {
             let mut cursor = state.items.cursor::<Count>(());
             let mut new_items = cursor.slice(&Count(range.start), Bias::Right);
@@ -470,6 +495,7 @@ impl ListState {
                 invalidated.iter().map(|item| ListItem::Unmeasured {
                     size_hint: item.size_hint(),
                     focus_handle: item.focus_handle(),
+                    measure_next,
                 }),
                 (),
             );
@@ -477,7 +503,6 @@ impl ListState {
             new_items
         };
         state.items = new_items;
-        state.measuring_behavior.reset();
     }
 
     /// The number of items in this list.
@@ -534,6 +559,7 @@ impl ListState {
                 ListItem::Unmeasured {
                     size_hint: None,
                     focus_handle,
+                    measure_next: false,
                 }
             }),
             (),
@@ -1011,17 +1037,22 @@ impl StateInner {
         window: &mut Window,
         cx: &mut App,
     ) {
-        match &mut self.measuring_behavior {
+        // The first pass, or one a reset or a width change asked for,
+        // measures every unmeasured item; after it, only those
+        // `remeasure_items` named.
+        let all = match &mut self.measuring_behavior {
             ListMeasuringBehavior::Visible => {
                 return;
             }
             ListMeasuringBehavior::Measure(has_measured) => {
-                if *has_measured {
+                let all = !*has_measured;
+                if !all && self.items.summary().measure_next_count == 0 {
                     return;
                 }
                 *has_measured = true;
+                all
             }
-        }
+        };
 
         let mut cursor = self.items.cursor::<Count>(());
         let available_item_space = size(
@@ -1032,16 +1063,23 @@ impl StateInner {
         let mut measured_items = Vec::default();
 
         for (ix, item) in cursor.enumerate() {
-            let size = item.size().unwrap_or_else(|| {
-                let mut element = render_item(ix, window, cx);
-                crate::fast::layout_key::layout_as_list_item(
-                    &mut element,
-                    ix,
-                    available_item_space,
-                    window,
-                    cx,
-                )
-            });
+            let size = match item.size() {
+                Some(size) => size,
+                None if all || item.measures_next() => {
+                    let mut element = render_item(ix, window, cx);
+                    crate::fast::layout_key::layout_as_list_item(
+                        &mut element,
+                        ix,
+                        available_item_space,
+                        window,
+                        cx,
+                    )
+                }
+                None => {
+                    measured_items.push(item.clone());
+                    continue;
+                }
+            };
 
             measured_items.push(ListItem::Measured {
                 size,
@@ -1318,7 +1356,9 @@ impl StateInner {
     ) -> Result<LayoutItemsResponse, ListOffset> {
         window.transact(|window| {
             match self.measuring_behavior {
-                ListMeasuringBehavior::Measure(has_measured) if !has_measured => {
+                ListMeasuringBehavior::Measure(has_measured)
+                    if !has_measured || self.items.summary().measure_next_count > 0 =>
+                {
                     self.layout_all_items(bounds.size.width, render_item, window, cx);
                 }
                 _ => {}
@@ -1632,6 +1672,7 @@ impl Element for List {
                 state.items.iter().map(|item| ListItem::Unmeasured {
                     size_hint: None,
                     focus_handle: item.focus_handle(),
+                    measure_next: false,
                 }),
                 (),
             );
@@ -1735,6 +1776,7 @@ impl sum_tree::Item for ListItem {
             ListItem::Unmeasured {
                 size_hint,
                 focus_handle,
+                measure_next,
             } => ListItemSummary {
                 count: 1,
                 rendered_count: 0,
@@ -1746,6 +1788,7 @@ impl sum_tree::Item for ListItem {
                 },
                 has_focus_handles: focus_handle.is_some(),
                 has_unknown_height: size_hint.is_none(),
+                measure_next_count: usize::from(*measure_next),
             },
             ListItem::Measured {
                 size, focus_handle, ..
@@ -1756,6 +1799,7 @@ impl sum_tree::Item for ListItem {
                 height: size.height,
                 has_focus_handles: focus_handle.is_some(),
                 has_unknown_height: false,
+                measure_next_count: 0,
             },
         }
     }
@@ -1773,6 +1817,7 @@ impl sum_tree::ContextLessSummary for ListItemSummary {
         self.height += summary.height;
         self.has_focus_handles |= summary.has_focus_handles;
         self.has_unknown_height |= summary.has_unknown_height;
+        self.measure_next_count += summary.measure_next_count;
     }
 }
 
@@ -2188,6 +2233,52 @@ mod test {
             view.into_any_element()
         });
         assert_eq!(state.max_offset_for_scrollbar().y, px(300.));
+    }
+
+    #[gpui::test]
+    fn test_remeasure_items_measures_only_the_items_it_names(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+
+        let state = ListState::new(10, crate::ListAlignment::Top, px(0.)).measure_all();
+        let rendered = Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        struct TestView(ListState, Rc<std::cell::RefCell<Vec<usize>>>);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let rendered = self.1.clone();
+                list(self.0.clone(), move |ix, _, _| {
+                    rendered.borrow_mut().push(ix);
+                    div().h(px(50.)).w_full().into_any()
+                })
+                .w_full()
+                .h_full()
+            }
+        }
+
+        let view = cx.update(|_, cx| cx.new(|_| TestView(state.clone(), rendered.clone())));
+
+        // The first draw measures all 10 items.
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(200.)), |_, _| {
+            view.clone().into_any_element()
+        });
+        assert_eq!(state.max_offset_for_scrollbar().y, px(300.));
+
+        // 100 items land below the viewport, left to be measured as the list
+        // reaches them, and item 0 changes.
+        state.splice(10..10, 100);
+        state.remeasure_items(0..1);
+        rendered.borrow_mut().clear();
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(200.)), |_, _| {
+            view.into_any_element()
+        });
+
+        let rendered = rendered.borrow();
+        let spliced = rendered.iter().filter(|ix| **ix >= 10).count();
+        assert!(rendered.contains(&0), "item 0 was not measured again");
+        assert_eq!(
+            spliced, 0,
+            "remeasuring item 0 measured {spliced} of the 100 items the splice left unmeasured"
+        );
     }
 
     #[gpui::test]
