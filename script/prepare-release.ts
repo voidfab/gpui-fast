@@ -61,6 +61,17 @@ export function adaptToReleasedWgpu(source: string): string {
   return adapted;
 }
 
+export function copyReleaseSource(source: string, target: string): void {
+  cpSync(source, target, { recursive: true });
+  // Source license links reach outside each crate; ship their exact bytes,
+  // not links back into the checkout that generated the release.
+  for (const file of new Bun.Glob("**/LICENSE-APACHE").scanSync({ cwd: source, onlyFiles: false })) {
+    const license = readFileSync(resolve(source, file));
+    rmSync(resolve(target, file));
+    writeFileSync(resolve(target, file), license);
+  }
+}
+
 export function prepare(config: ReleaseConfig, version: string, dest = DEST): void {
   versionFromTag("v" + version);
   const workspace = readToml(resolve(ROOT, "Cargo.toml")).workspace;
@@ -74,7 +85,7 @@ export function prepare(config: ReleaseConfig, version: string, dest = DEST): vo
   for (const name of config.crates) {
     const source = resolve(ROOT, "crates", name);
     const target = resolve(dest, name);
-    cpSync(source, target, { recursive: true });
+    copyReleaseSource(source, target);
     const manifest = readToml(resolve(source, "Cargo.toml"));
     const pkg = manifest.package;
     Object.assign(pkg, {

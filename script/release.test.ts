@@ -1,12 +1,36 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { adaptToReleasedWgpu, dependency } from "./prepare-release";
+import { adaptToReleasedWgpu, copyReleaseSource, dependency } from "./prepare-release";
 import { validate } from "./publish-release";
 import { fastName, readConfig, readToml } from "./release-common";
 
 const config = readConfig();
+
+test("release Apache licenses are portable regular files with exact source bytes", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "gpui-fast-licenses-"));
+  const source = resolve(root, "source");
+  const target = resolve(root, "release");
+  const license = readFileSync(resolve(import.meta.dir, "../LICENSE"));
+  try {
+    mkdirSync(resolve(source, "crate/examples/hello_web"), { recursive: true });
+    writeFileSync(resolve(source, "LICENSE"), license);
+    symlinkSync("LICENSE", resolve(source, "LICENSE-APACHE"));
+    symlinkSync("../LICENSE-APACHE", resolve(source, "crate/LICENSE-APACHE"));
+    symlinkSync("../../../LICENSE-APACHE", resolve(source, "crate/examples/hello_web/LICENSE-APACHE"));
+    copyReleaseSource(resolve(source, "crate"), target);
+    renameSync(target, resolve(root, "relocated"));
+    rmSync(source, { recursive: true });
+    for (const path of ["LICENSE-APACHE", "examples/hello_web/LICENSE-APACHE"]) {
+      const file = resolve(root, "relocated", path);
+      expect(lstatSync(file).isFile()).toBe(true);
+      expect(readFileSync(file)).toEqual(license);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("publication validates caret sibling requirements and rejects exact pins", () => {
   const root = mkdtempSync(resolve(tmpdir(), "gpui-fast-validate-"));
