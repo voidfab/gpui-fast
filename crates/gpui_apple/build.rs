@@ -176,6 +176,17 @@ mod apple_build {
         // When targeting macOS 12+, both `metal` and `metallib` also record
         // their working directory in the metallib. Run them from OUT_DIR so
         // that path isn't the checkout either.
+        // vulpine (FOX9-d98842): OUT_DIR itself is still a build-machine path
+        // (it names the cargo target directory), so remap it to a fixed prefix
+        // in the debug info and in every recorded file name: the shipped
+        // metallib then carries `/gpui/shaders.metal`, never the builder's
+        // volume or home folder. `-MO` is deliberately absent: it embeds the
+        // shader source together with the `.air` output path and the metallib
+        // command line, which the prefix maps do not reach. Line tables still
+        // name `/gpui/...` for Metal's shader debugger and profiler.
+        let debug_prefix_map = format!("-fdebug-prefix-map={}=/gpui", out_dir.display());
+        let file_prefix_map = format!("-ffile-prefix-map={}=/gpui", out_dir.display());
+
         let output = Command::new("xcrun")
             .current_dir(&out_dir)
             .arg("-sdk")
@@ -183,8 +194,9 @@ mod apple_build {
             .args([
                 "metal",
                 "-gline-tables-only",
+                &debug_prefix_map,
+                &file_prefix_map,
                 minimum_version_argument,
-                "-MO",
                 "-c",
             ])
             .arg(&staged_shader_path)
