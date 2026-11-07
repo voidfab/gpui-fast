@@ -20,5 +20,6 @@ crates = [
     "gpui_linux",
     "gpui_windows",
     "gpui_web",
+    "gpui_ios",
     "gpui_platform",
 ]
