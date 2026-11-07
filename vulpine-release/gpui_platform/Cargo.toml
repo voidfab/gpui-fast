@@ -49,8 +49,9 @@ version = "^0.1.12"
 path = "../gpui_macos"
 
 [target."cfg(target_os = \"ios\")".dependencies.gpui_ios]
-package = "gpui-pre-ios"
-version = "=0.3.10"
+package = "gpui-fast-ios"
+version = "^0.1.12"
+path = "../gpui_ios"
 
 [target."cfg(target_os = \"windows\")".dependencies.gpui_windows]
 default-features = false

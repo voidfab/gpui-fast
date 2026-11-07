@@ -1,0 +1,87 @@
+# Modified by Longbridge for gpui-fast publication.
+[package]
+name = "gpui-fast-ios"
+version = "0.1.12"
+edition = "2024"
+publish = ["crates-io"]
+license = "Apache-2.0"
+repository = "https://github.com/longbridge/gpui-fast"
+homepage = "https://github.com/longbridge/gpui-fast"
+readme = "README.md"
+documentation = "https://docs.rs/gpui-fast-ios/0.1.12/gpui_ios/"
+description = "gpui_ios: GPUI with gpui-fast rendering and layout optimizations"
+autoexamples = false
+autobenches = false
+autotests = false
+authors = ["Longbridge"]
+include = ["/src/**", "/resources/**", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE", "/NOTICE"]
+
+[lib]
+path = "src/gpui_ios.rs"
+crate-type = ["staticlib", "rlib"]
+doctest = false
+name = "gpui_ios"
+
+[features]
+runtime_shaders = ["gpui_apple/runtime_shaders"]
+
+[dependencies.gpui]
+default-features = false
+package = "gpui-fast"
+version = "^0.1.12"
+path = "../gpui"
+
+[target."cfg(target_os = \"ios\")".dependencies.anyhow]
+version = "1.0.86"
+
+[target."cfg(target_os = \"ios\")".dependencies.block2]
+version = "0.6"
+
+[target."cfg(target_os = \"ios\")".dependencies.futures]
+version = "0.3.34"
+
+[target."cfg(target_os = \"ios\")".dependencies.gpui_apple]
+features = ["font-kit"]
+package = "gpui-fast-apple"
+version = "^0.1.12"
+path = "../gpui_apple"
+
+[target."cfg(target_os = \"ios\")".dependencies.log]
+version = "0.4"
+default-features = false
+features = ["std"]
+
+[target."cfg(target_os = \"ios\")".dependencies.objc2]
+version = "0.6"
+
+[target."cfg(target_os = \"ios\")".dependencies.objc2-foundation]
+version = "=0.3.2"
+default-features = false
+features = ["NSArray", "NSAttributedString", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSNull", "NSObjCRuntime", "NSObject", "NSProcessInfo", "NSRange", "NSRunLoop", "NSSet", "NSString", "NSURL", "NSValue", "objc2-core-foundation", "std", "NSThread", "NSOperation", "NSUserActivity", "block2"]
+
+[target."cfg(target_os = \"ios\")".dependencies.objc2-ui-kit]
+version = "0.3.2"
+default-features = false
+features = ["std", "block2", "objc2-quartz-core", "objc2-core-foundation", "NSText", "UIApplication", "UICommand", "UICornerConfiguration", "UICornerRadius", "UIEvent", "UIGeometry", "UIGestureRecognizer", "UIPanGestureRecognizer", "UIScreenEdgePanGestureRecognizer", "UIInterface", "UIOpenURLContext", "UIPasteboard", "UIResponder", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UIScreen", "UITextInput", "UITextInputTraits", "UITouch", "UITraitCollection", "UIView", "UIViewController", "UIWindow", "UIWindowScene"]
+
+[target."cfg(target_os = \"ios\")".dependencies.objc2-quartz-core]
+version = "=0.3.2"
+default-features = false
+features = ["std", "CALayer", "CAMetalLayer", "CADisplayLink"]
+
+[target."cfg(target_os = \"ios\")".dependencies.objc2-core-foundation]
+version = "=0.3.2"
+default-features = true
+
+[target."cfg(target_os = \"ios\")".dependencies.parking_lot]
+version = "0.12.1"
+
+[target."cfg(target_os = \"ios\")".dependencies.raw-window-handle]
+version = "0.6"
+
+[target."cfg(target_os = \"ios\")".dependencies.uuid]
+version = "1.1"
+features = ["serde", "v5"]
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

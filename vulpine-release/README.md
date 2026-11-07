@@ -1,6 +1,6 @@
 # vulpine-release
 
-The nine gpui-fast crates in their published form (package names `gpui-fast`, `gpui-fast-macos`, `gpui-fast-apple`,
+The ten gpui-fast crates in their published form (package names `gpui-fast`, `gpui-fast-macos`, `gpui-fast-apple`,
 ...), generated from this branch's `crates/` by the release script, unchanged:
 
 ```
