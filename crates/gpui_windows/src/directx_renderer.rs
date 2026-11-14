@@ -414,6 +414,9 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                // vulpine (FOX9-2482e9): the in-frame painter's backends are Metal only
+                // (gpui-fast-apple), so no painter registered here can draw.
+                PrimitiveBatch::GpuPaints(_) => Ok(()),
             }
             .with_context(|| {
                 format!(
