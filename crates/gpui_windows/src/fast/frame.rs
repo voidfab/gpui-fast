@@ -297,6 +297,9 @@ pub(crate) fn draw_scene_masked(
             }
             // Upstream draws nothing for surfaces on Windows either.
             PrimitiveBatch::Surfaces(_) => Ok(()),
+            // vulpine (FOX9-2482e9): the in-frame painter's backends are Metal only
+            // (gpui-fast-apple), so no painter registered here can draw.
+            PrimitiveBatch::GpuPaints(_) => Ok(()),
         }
         .with_context(|| scene_too_large(scene))?;
     }
