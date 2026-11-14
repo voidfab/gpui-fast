@@ -1607,6 +1607,9 @@ impl WgpuRendererCore {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
+                    // vulpine (FOX9-2482e9): the in-frame painter's backends are Metal only
+                    // (gpui-fast-apple), so no painter registered here can draw.
+                    PrimitiveBatch::GpuPaints(_) => {}
                 }
             }
         }
