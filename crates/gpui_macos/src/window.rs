@@ -3785,6 +3785,19 @@ extern "C" fn step(view: *mut c_void) {
     let window_state = unsafe { get_window_state(&*view) };
     let mut lock = window_state.lock();
 
+    // vulpine LSR1 (FOX9-927eea): a window nobody can see draws nothing. The link runs for a window without the
+    // visible bit only while an order-front's show intent waits for its occlusion notification. A window ordered
+    // front under the lock screen (or off every screen) already reads hidden, so no notification ever comes: its
+    // link ran at the display's rate for as long as its view asked for frames, ordered out too. Past the intent's
+    // grace (or after an order-out dropped it) the link stops as an occlusion stop does; the occlusion notification
+    // that brings the visible bit starts it again (the intent is cleared, so that notification is not taken for the
+    // intent's own).
+    if !lock.is_occlusion_visible() && !lock.showing() {
+        lock.show_intent = None;
+        lock.stop_display_link();
+        return;
+    }
+
     if let Some(mut callback) = lock.request_frame_callback.take() {
         let (signal_at, signal_source) = lock
             .frame_source
