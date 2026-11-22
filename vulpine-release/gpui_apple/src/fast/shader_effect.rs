@@ -205,12 +205,15 @@ impl Effect {
             warn_once("the effect's copy texture could not be made");
             return Ok(encoder);
         };
+        // A command buffer encodes one pass at a time: the group's render pass
+        // ends before the copy's blit encoder is made (Metal asserts otherwise).
+        encoder.endEncoding();
         let Some(blit) = commands.blitCommandEncoder() else {
             warn_once("no blit encoder for the effect's copy");
+            let encoder = new_command_encoder_for_texture(commands, texture, viewport, None)?;
+            rebind(&encoder);
             return Ok(encoder);
         };
-
-        encoder.endEncoding();
         // SAFETY: the source region lies inside `texture` (see `region`), the
         // copy is that region's size at level 0, and both textures outlive the
         // command buffer's encoding.
