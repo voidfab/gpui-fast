@@ -12,7 +12,8 @@ then this README restored. It exists so a Cargo `[patch.crates-io]` entry can ta
 (`gpui-fast = { git = "https://github.com/voidfab/gpui-fast", rev = "..." }`): the source workspace's packages are
 named `gpui`, `gpui_macos`, ... at versions that do not match the published ones, so Cargo would not find them.
 Regenerate it in the branch's last commit whenever a commit below it changes `crates/` (`--tag v0.1.17` on branch
-`vulpine-2026-11-22`, the stack rebased onto longbridge/gpui-fast main 7a4beb1, 22 commits past v0.1.17); vulpine's
+`vulpine-2026-11-22`, the stack rebased onto longbridge/gpui-fast main 7a4beb1, 22 commits past v0.1.17, with #158
+reverted for the 0.3.12 snapshot crates); vulpine's
 `tools/apps/upstream_patches.py verify` checks that it matches a fresh `prepare-release` of the tagged commit.
 
 Not part of longbridge/gpui-fast. The vulpine patches are the commits on this branch above the upstream tag; each
