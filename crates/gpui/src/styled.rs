@@ -748,6 +748,14 @@ pub trait Styled: Sized {
         self
     }
 
+    /// vulpine (FOX9-a010dd): blurs everything already painted behind this element's border box, clipped to its
+    /// corner radii, under its background (CSS `backdrop-filter: blur(<length>)`). Ported from Skathi's gpui fork
+    /// (Apache-2.0). Drawn by the Metal renderer only ([`crate::Window::supports_backdrop_blur`]).
+    fn backdrop_blur(mut self, radius: impl Into<crate::Pixels>) -> Self {
+        self.style().backdrop_blur = Some(radius.into());
+        self
+    }
+
     /// Sets the grid columns of this element.
     fn grid_cols(mut self, cols: u16) -> Self {
         self.style().grid_cols = Some(GridTemplate {

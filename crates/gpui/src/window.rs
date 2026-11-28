@@ -5571,6 +5571,57 @@ impl Window {
         });
     }
 
+    /// vulpine (FOX9-a010dd): paints a backdrop blur at the current z-index: the pixels already painted behind
+    /// `bounds` are replaced with a blurred copy of themselves, clipped to the rounded rect `corner_radii` describe
+    /// and to the current content mask, then `effect.tint` is composited over them. The current opacity fades the
+    /// whole of it into the unblurred backdrop. Call during the paint phase.
+    ///
+    /// The blur reads the frame as drawn so far, so the Metal renderer breaks its pass for it; prefer one blur per
+    /// glass surface over many small ones. A frame without one pays nothing. Renderers without backdrop blur
+    /// ([`Window::supports_backdrop_blur`] is false) skip it, tint included: paint the element's own background
+    /// as an ordinary quad over it.
+    ///
+    /// This fork's elements carry no transform, so a blur is always the axis-aligned rect it was given (Skathi's
+    /// rule, kept by construction: a rotated element must draw no blur rather than a ghost at its untransformed
+    /// place).
+    pub fn paint_backdrop_blur_rect(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        effect: BackdropBlurEffect,
+    ) {
+        self.invalidator.debug_assert_paint();
+        let opacity = self.element_opacity();
+        if opacity <= 0. {
+            return;
+        }
+        let scale_factor = self.scale_factor();
+        let blur_radius = effect.radius.scale(scale_factor);
+        if blur_radius.0 <= 0. && effect.tint.a <= 0. {
+            return;
+        }
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        self.next_frame
+            .scene
+            .insert_primitive(crate::BackdropBlurRect {
+                order: 0,
+                pad: 0,
+                bounds,
+                content_mask,
+                corner_radii: corner_radii.scale(scale_factor),
+                blur_radius: ScaledPixels(blur_radius.0.max(0.)),
+                opacity: opacity.min(1.),
+                tint: effect.tint,
+            });
+    }
+
+    /// vulpine (FOX9-a010dd): whether this platform's renderer draws [`Window::paint_backdrop_blur_rect`]: the
+    /// Metal renderer (macOS, iOS) does; the wgpu (Linux, web) and DirectX renderers skip the primitive.
+    pub fn supports_backdrop_blur(&self) -> bool {
+        cfg!(any(target_os = "macos", target_os = "ios"))
+    }
+
     /// vulpine (FOX9-f0a295): registers an application GPU painter on this window. The returned handle can only be
     /// used with this window; the painter is told when the window goes ([`crate::GpuResetReason`]).
     pub fn register_gpu_painter<Snapshot: Send + Sync + 'static>(
@@ -11002,5 +11053,32 @@ mod inspector_tests {
             }
         })
         .expect("closed inspector has no bookkeeping and no style overrides");
+    }
+}
+
+/// vulpine (FOX9-a010dd): options for [`Window::paint_backdrop_blur_rect`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackdropBlurEffect {
+    /// The blur radius in logical pixels, as CSS `backdrop-filter: blur(<length>)`'s. At most 0 blurs nothing (the
+    /// tint is still drawn); the renderer quantises it to whole pyramid levels and saturates at 25 scaled pixels
+    /// ([`crate::BackdropBlurRect::effective_kernel_levels`]).
+    pub radius: crate::Pixels,
+    /// Composited over the blurred backdrop (straight alpha). CSS paints an element's background as a separate
+    /// quad over the filtered backdrop; callers modelling that leave this transparent.
+    pub tint: crate::Hsla,
+}
+
+impl BackdropBlurEffect {
+    /// A blur of `radius` with no tint.
+    pub fn new(radius: crate::Pixels) -> Self {
+        Self {
+            radius,
+            tint: crate::Hsla::transparent_black(),
+        }
+    }
+
+    /// The same blur with `tint` composited over it.
+    pub fn tint(self, tint: crate::Hsla) -> Self {
+        Self { tint, ..self }
     }
 }

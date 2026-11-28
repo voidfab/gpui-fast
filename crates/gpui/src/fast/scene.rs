@@ -4,8 +4,8 @@
 //! the bounds tree replays.
 
 use crate::{
-    DrawOrder, GpuPaintSurface, MonochromeSprite, PaintSurface, Path, PolychromeSprite, Quad,
-    ScaledPixels, Scene, Shadow, SubpixelSprite, Underline,
+    BackdropBlurRect, DrawOrder, GpuPaintSurface, MonochromeSprite, PaintSurface, Path,
+    PolychromeSprite, Quad, ScaledPixels, Scene, Shadow, SubpixelSprite, Underline,
 };
 use std::mem;
 
@@ -23,6 +23,7 @@ pub(crate) struct SortScratch {
     polychrome_sprites: Vec<PolychromeSprite>,
     surfaces: Vec<PaintSurface>,
     gpu_paints: Vec<GpuPaintSurface>,
+    backdrop_blur_rects: Vec<BackdropBlurRect>,
 }
 
 /// The order to gather a kind of primitive in, and what working it out takes.
@@ -267,6 +268,7 @@ pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
     sort_sprites!(polychrome_sprites);
     sort!(surfaces, |surface: &PaintSurface| surface.order);
     sort!(gpu_paints, |surface: &GpuPaintSurface| surface.order);
+    sort!(backdrop_blur_rects, |rect: &BackdropBlurRect| rect.order);
 }
 
 #[cfg(test)]

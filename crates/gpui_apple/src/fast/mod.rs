@@ -10,6 +10,8 @@
 
 #[cfg(feature = "font-kit")]
 pub(crate) mod color_bitmap_fonts;
+// vulpine (FOX9-a010dd): backdrop blur, frosted glass over what the frame drew so far.
+pub(crate) mod backdrop;
 pub(crate) mod composition;
 pub(crate) mod dynamic_textures;
 #[cfg(feature = "font-kit")]

@@ -1646,6 +1646,8 @@ impl WgpuRendererCore {
                     // vulpine (FOX9-2482e9): the in-frame painter's backends are Metal only
                     // (gpui-fast-apple), so no painter registered here can draw.
                     PrimitiveBatch::GpuPaints(_) => {}
+                    // vulpine (FOX9-a010dd): backdrop blur is drawn by the Metal renderer only.
+                    PrimitiveBatch::BackdropBlurRects(_) => {}
                 }
             }
         }

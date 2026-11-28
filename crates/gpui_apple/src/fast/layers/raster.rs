@@ -219,6 +219,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
+        backdrop_blur_rects: writer.write(&scene.backdrop_blur_rects)?,
     })
 }
 
@@ -271,9 +272,11 @@ fn draw_tile_scene(
             // tile and moved by an odd number of pixels antialiases
             // differently. Metal draws no subpixel sprites.
             // vulpine (FOX9-f0a295): nor GPU paints (content holding one is drawn into the frame).
+            // vulpine (FOX9-a010dd): nor backdrop blurs (they read the frame under them).
             PrimitiveBatch::Paths(range)
             | PrimitiveBatch::SubpixelSprites { range, .. }
-            | PrimitiveBatch::GpuPaints(range) => {
+            | PrimitiveBatch::GpuPaints(range)
+            | PrimitiveBatch::BackdropBlurRects(range) => {
                 debug_assert!(
                     range.is_empty(),
                     "a layer tile holds a path or subpixel sprite"

@@ -58,6 +58,7 @@ fn rank(primitive: &Primitive) -> u8 {
         Primitive::PolychromeSprite(_) => 6,
         Primitive::Surface(_) => 7,
         Primitive::GpuPaint(_) => 8,
+        Primitive::BackdropBlurRect(_) => 9,
     }
 }
 

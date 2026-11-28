@@ -307,6 +307,14 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_bounds(&surface.bounds, hasher);
             hash_mask(&surface.content_mask, tile, hasher);
         }
+        // vulpine (FOX9-a010dd): layers draw a backdrop blur into the frame, never into a tile.
+        Primitive::BackdropBlurRect(rect) => {
+            hasher.write_u8(9);
+            hash_bounds(&rect.bounds, hasher);
+            hash_mask(&rect.content_mask, tile, hasher);
+            hasher.write_u32(rect.blur_radius.0.to_bits());
+            hasher.write_u32(rect.opacity.to_bits());
+        }
     }
 }
 
