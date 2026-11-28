@@ -737,6 +737,7 @@ fn clip_primitive(primitive: &mut Primitive, viewports: Viewports) {
         Primitive::PolychromeSprite(p) => clip(&mut p.content_mask),
         Primitive::Surface(p) => clip(&mut p.content_mask),
         Primitive::GpuPaint(p) => clip(&mut p.content_mask),
+        Primitive::BackdropBlurRect(p) => clip(&mut p.content_mask),
     }
 }
 
@@ -793,11 +794,14 @@ fn repaint(
     };
     let (content, overlay) = crate::fast::layers::overlay::lift(content);
     // vulpine (FOX9-f0a295): a GPU paint is drawn by its painter in the frame, never baked into a tile, so
-    // content holding one is drawn into the frame as content with paths is.
+    // content holding one is drawn into the frame as content with paths is. vulpine (FOX9-a010dd): so is a backdrop
+    // blur, which reads the frame under it: a tile has no frame under it to read.
     let has_paths = content.paint_operations.iter().any(|operation| {
         matches!(
             operation,
-            PaintOperation::Primitive(Primitive::Path(_) | Primitive::GpuPaint(_))
+            PaintOperation::Primitive(
+                Primitive::Path(_) | Primitive::GpuPaint(_) | Primitive::BackdropBlurRect(_)
+            )
         )
     });
     let mut visible = painting.viewport.scale(scale_factor);

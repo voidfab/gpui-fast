@@ -302,6 +302,10 @@ pub struct Style {
     /// The opacity of this element
     pub opacity: Option<f32>,
 
+    /// vulpine (FOX9-a010dd): blurs what is already painted behind this element's border box, clipped to its corner
+    /// radii (CSS `backdrop-filter: blur(<length>)`), under its background.
+    pub backdrop_blur: Option<Pixels>,
+
     /// The grid columns of this element
     /// Roughly equivalent to the Tailwind `grid-cols-<number>`
     pub grid_cols: Option<GridTemplate>,
@@ -711,6 +715,17 @@ impl Style {
 
         window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
 
+        // vulpine (FOX9-a010dd): the frosted backdrop goes under the background, which tints it.
+        if let Some(radius) = self.backdrop_blur
+            && radius > crate::px(0.)
+        {
+            window.paint_backdrop_blur_rect(
+                bounds,
+                corner_radii,
+                crate::BackdropBlurEffect::new(radius),
+            );
+        }
+
         let background_color = self.background.as_ref().and_then(Fill::color);
         if background_color.is_some_and(|color| !color.is_transparent()) {
             let mut border_color = match background_color {
@@ -810,6 +825,7 @@ impl Default for Style {
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,
+            backdrop_blur: None,
             grid_rows: None,
             grid_cols: None,
             grid_location: None,

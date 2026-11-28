@@ -1288,3 +1288,156 @@ float4 fill_color(Background background,
 
   return color;
 }
+
+// vulpine (FOX9-a010dd): CSS `backdrop-filter: blur()`, ported from Skathi's gpui
+// fork (Apache-2.0, crates/gpui_apple/src/shaders.metal; see the repository's
+// NOTICE): a Dual-Kawase pyramid over a copy of the frame, then a rounded-rect
+// composite drawn with blending off. Every entry point draws a four-vertex
+// triangle strip. Bindings (gpui_apple/src/fast/backdrop.rs): the instances at
+// buffer 0, the viewport size at buffer 1, the processed copy at texture 0, the
+// untouched copy at texture 1.
+
+constexpr sampler backdrop_clamp_sampler(address::clamp_to_edge,
+                                         mag_filter::linear,
+                                         min_filter::linear);
+
+float2 backdrop_strip_unit_vertex(uint vertex_id) {
+  return float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+}
+
+// Keeps rgb <= a, so a premultiplied target never holds an out-of-gamut pixel.
+float4 backdrop_clamp_premultiplied(float4 color) {
+  float alpha = saturate(color.a);
+  return float4(clamp(color.rgb, float3(0.), float3(alpha)), alpha);
+}
+
+// The rect cut to its content mask's rectangle: drawing the intersection
+// rejects exactly the pixels the other pipelines' clip distances reject.
+Bounds_ScaledPixels backdrop_clip_to_mask(Bounds_ScaledPixels bounds,
+                                          Bounds_ScaledPixels mask) {
+  float2 origin = max(float2(bounds.origin.x, bounds.origin.y),
+                      float2(mask.origin.x, mask.origin.y));
+  float2 corner = min(
+      float2(bounds.origin.x + bounds.size.width,
+             bounds.origin.y + bounds.size.height),
+      float2(mask.origin.x + mask.size.width, mask.origin.y + mask.size.height));
+  float2 size = max(corner - origin, float2(0.));
+  Bounds_ScaledPixels clipped;
+  clipped.origin.x = origin.x;
+  clipped.origin.y = origin.y;
+  clipped.size.width = size.x;
+  clipped.size.height = size.y;
+  return clipped;
+}
+
+struct BackdropPassVertexOutput {
+  float4 position [[position]];
+  float2 texture_position;
+};
+
+// The whole target, for the pyramid passes and the intermediate frame's copy;
+// a pass writes only its scissor.
+vertex BackdropPassVertexOutput backdrop_pass_vertex(uint vertex_id [[vertex_id]]) {
+  float2 unit_vertex = backdrop_strip_unit_vertex(vertex_id);
+  return BackdropPassVertexOutput{
+      float4(unit_vertex * float2(2., -2.) + float2(-1., 1.), 0., 1.),
+      unit_vertex};
+}
+
+// Dual-Kawase down: the centre at one half and the four diagonal taps at one
+// eighth each, read a texel apart in the level above.
+fragment float4 backdrop_blur_downsample_fragment(
+    BackdropPassVertexOutput input [[stage_in]],
+    texture2d<float> source [[texture(0)]]) {
+  float2 texel = 1. / float2(source.get_width(), source.get_height());
+  float2 uv = input.texture_position;
+  float4 color = source.sample(backdrop_clamp_sampler, uv) * 0.5;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(-1., -1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(1., -1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(-1., 1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(1., 1.)) * 0.125;
+  return backdrop_clamp_premultiplied(color);
+}
+
+// Dual-Kawase up: eight taps at one eighth each, the four edges and the four
+// diagonals a texel apart in the level below.
+fragment float4 backdrop_blur_upsample_fragment(
+    BackdropPassVertexOutput input [[stage_in]],
+    texture2d<float> source [[texture(0)]]) {
+  float2 texel = 1. / float2(source.get_width(), source.get_height());
+  float2 uv = input.texture_position;
+  float4 color = float4(0.);
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(-1., 0.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(1., 0.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(0., -1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(0., 1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(-1., -1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(1., -1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(-1., 1.)) * 0.125;
+  color += source.sample(backdrop_clamp_sampler, uv + texel * float2(1., 1.)) * 0.125;
+  return backdrop_clamp_premultiplied(color);
+}
+
+// The intermediate frame onto the drawable, texel for pixel.
+fragment float4 backdrop_frame_copy_fragment(
+    BackdropPassVertexOutput input [[stage_in]],
+    texture2d<float> source [[texture(0)]]) {
+  return source.read(uint2(input.position.xy));
+}
+
+struct BackdropBlurRectVertexOutput {
+  float4 position [[position]];
+  uint blur_rect_id [[flat]];
+};
+
+vertex BackdropBlurRectVertexOutput backdrop_blur_rect_vertex(
+    uint vertex_id [[vertex_id]], uint blur_rect_id [[instance_id]],
+    constant BackdropBlurRect *blur_rects [[buffer(0)]],
+    constant Size_DevicePixels *viewport_size [[buffer(1)]]) {
+  BackdropBlurRect blur_rect = blur_rects[blur_rect_id];
+  float4 position = to_device_position(
+      backdrop_strip_unit_vertex(vertex_id),
+      backdrop_clip_to_mask(blur_rect.bounds, blur_rect.content_mask.bounds),
+      viewport_size);
+  return BackdropBlurRectVertexOutput{position, blur_rect_id};
+}
+
+// `above` arrives with straight alpha, `below` is already premultiplied.
+float4 backdrop_over_straight_on_premultiplied(float4 below, float4 above) {
+  float4 premultiplied = float4(above.rgb * above.a, above.a);
+  return backdrop_clamp_premultiplied(premultiplied + below * (1. - above.a));
+}
+
+// Drawn with blending disabled: outside the rounded rect (and outside a rounded
+// clip group's shapes) the untouched copy is written back, which keeps the
+// antialiased edge exact.
+fragment float4 backdrop_blur_rect_fragment(
+    BackdropBlurRectVertexOutput input [[stage_in]],
+    constant BackdropBlurRect *blur_rects [[buffer(0)]],
+    constant Size_DevicePixels *viewport_size [[buffer(1)]],
+    texture2d<float> processed [[texture(0)]],
+    texture2d<float> original [[texture(1)]],
+    constant FastRoundedClip *fast_clip_shapes [[buffer(28)]],
+    constant uint &fast_clip_enabled [[buffer(29)]]) {
+  BackdropBlurRect blur_rect = blur_rects[input.blur_rect_id];
+  float2 position = input.position.xy;
+  float2 texture_position =
+      position / float2(viewport_size->width, viewport_size->height);
+
+  float sdf = quad_sdf(position, blur_rect.bounds, blur_rect.corner_radii);
+  float shape_alpha = saturate(0.5 - sdf);
+
+  float4 untouched =
+      original.sample(backdrop_clamp_sampler, texture_position, level(0.));
+  float4 blurred =
+      processed.sample(backdrop_clamp_sampler, texture_position, level(0.));
+  float4 tint = hsla_to_rgba(blur_rect.tint);
+  float4 tinted =
+      tint.a > 0. ? backdrop_over_straight_on_premultiplied(blurred, tint) : blurred;
+  float clip = 1.;
+  for (uint index = 0; index < fast_clip_enabled; ++index) {
+    clip = min(clip, fast_rounded_clip_coverage(position, fast_clip_shapes[index]));
+  }
+  float coverage = shape_alpha * saturate(blur_rect.opacity) * clip;
+  return backdrop_clamp_premultiplied(mix(untouched, tinted, float4(coverage)));
+}

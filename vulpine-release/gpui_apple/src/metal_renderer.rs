@@ -175,6 +175,8 @@ pub struct MetalRenderer {
     pub(crate) fast_layers: crate::fast::layers::TileCache,
     /// vulpine (FOX9-f0a295): the in-frame GPU painters' per-frame state.
     pub(crate) gpu_paint: crate::gpu_painter::RendererState,
+    /// vulpine (FOX9-a010dd): backdrop blur's pipelines and scratch, made on the first frame that blurs.
+    pub(crate) backdrop: crate::fast::backdrop::Backdrop,
 }
 
 #[repr(C)]
@@ -446,6 +448,7 @@ impl MetalRenderer {
         let cache = ptr::NonNull::new(cache).context("retrieving CoreVideo Metal texture cache")?;
         // SAFETY: The successful create call transfers ownership of this non-null cache.
         let core_video_texture_cache = unsafe { CFRetained::from_raw(cache) };
+        let backdrop = crate::fast::backdrop::Backdrop::new(&library);
 
         Ok(Self {
             device,
@@ -477,6 +480,7 @@ impl MetalRenderer {
             headless_render_target: None,
             fast_layers: crate::fast::layers::TileCache::default(),
             gpu_paint: crate::gpu_painter::RendererState::default(),
+            backdrop,
         })
     }
 
@@ -693,6 +697,18 @@ impl MetalRenderer {
         }
     }
 
+    /// vulpine (FOX9-a010dd): the bytes backdrop blur's scratch textures hold now (the snapshot, the pyramid and a
+    /// framebuffer-only drawable's intermediate; 0 when no blur has drawn for 90 frames), for measurement runs.
+    pub fn backdrop_scratch_bytes(&self) -> usize {
+        self.backdrop.scratch_bytes()
+    }
+
+    /// vulpine (FOX9-a010dd): the format the renderer's targets take, for measurement targets in tests.
+    #[cfg(test)]
+    pub(crate) fn pixel_format_for_tests(&self) -> MTLPixelFormat {
+        self.pixel_format
+    }
+
     pub(crate) fn render_frame(
         &mut self,
         scene: &Scene,
@@ -702,6 +718,10 @@ impl MetalRenderer {
         if self.path_intermediate_texture.is_none() {
             self.update_path_intermediate_textures(viewport_size)?;
         }
+        // vulpine (FOX9-a010dd): a frame with a backdrop blur on a framebuffer-only drawable draws into an
+        // intermediate, copied onto the drawable at its end; any other frame draws into `texture` as before.
+        let frame = crate::fast::backdrop::prepare_frame(self, scene, texture);
+        let texture = frame.texture();
         crate::fast::layers::raster::rasterize_tiles(self, scene);
         crate::gpu_painter::prepare_frame(self, scene, texture);
         let mut writer = InstanceBufferWriter::new(
@@ -730,6 +750,7 @@ impl MetalRenderer {
             viewport_size,
             &mut surface_textures,
         )?;
+        crate::fast::backdrop::finish_frame(self, &command_buffer, &frame)?;
         crate::gpu_painter::time_frame(&command_buffer);
 
         let instance_buffer_pool = self.instance_buffer_pool.clone();
@@ -1012,6 +1033,21 @@ impl MetalRenderer {
                     viewport_size,
                     &[],
                 )?,
+                // vulpine (FOX9-a010dd): the pass breaks for a snapshot of what is drawn so far.
+                PrimitiveBatch::BackdropBlurRects(range) => {
+                    command_encoder = crate::fast::backdrop::draw(
+                        &mut self.backdrop,
+                        &self.device,
+                        &command_buffer,
+                        command_encoder,
+                        texture,
+                        &scene.backdrop_blur_rects[range.clone()],
+                        range.start,
+                        &instance_bindings.backdrop_blur_rects,
+                        viewport_size,
+                        |_| {},
+                    )?
+                }
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
         }
@@ -1808,6 +1844,8 @@ pub(crate) struct InstanceBindings {
     pub(crate) monochrome_sprites: InstanceBinding,
     pub(crate) polychrome_sprites: InstanceBinding,
     pub(crate) surfaces: InstanceBinding,
+    /// vulpine (FOX9-a010dd).
+    pub(crate) backdrop_blur_rects: InstanceBinding,
 }
 
 pub(crate) fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
@@ -1821,6 +1859,7 @@ pub(crate) fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) 
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
+        backdrop_blur_rects: writer.write(&scene.backdrop_blur_rects)?,
     })
 }
 

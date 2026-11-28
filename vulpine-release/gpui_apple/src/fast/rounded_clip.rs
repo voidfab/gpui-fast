@@ -318,6 +318,23 @@ fn encode(
                     &rounded,
                 )?;
             }
+            // vulpine (FOX9-a010dd): the pass breaks for a snapshot; the group's clip stack is bound again on the new
+            // encoder, and the composite reads it (outside the group's shapes it writes the backdrop back).
+            PrimitiveBatch::BackdropBlurRects(range) => {
+                let device = renderer.device.clone();
+                encoder = crate::fast::backdrop::draw(
+                    &mut renderer.backdrop,
+                    &device,
+                    commands,
+                    encoder,
+                    texture,
+                    &scene.backdrop_blur_rects[range.clone()],
+                    range.start,
+                    &bindings.backdrop_blur_rects,
+                    viewport,
+                    |e| bind(e, clips, &device),
+                )?;
+            }
             PrimitiveBatch::SubpixelSprites { .. } => unreachable!("Metal uses grayscale glyphs"),
         }
     }

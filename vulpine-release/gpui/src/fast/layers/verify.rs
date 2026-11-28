@@ -38,6 +38,7 @@ fn drawing_sequence(scene: &Scene) -> Vec<Primitive> {
     gather!(polychrome_sprites, 6, PolychromeSprite);
     gather!(surfaces, 7, Surface);
     gather!(gpu_paints, 8, GpuPaint);
+    gather!(backdrop_blur_rects, 9, BackdropBlurRect);
     sequence.sort_by_key(|(key, _)| *key);
     sequence
         .into_iter()
@@ -68,6 +69,7 @@ fn clip_to(primitive: &mut Primitive, mask: &Bounds<ScaledPixels>) {
         Primitive::PolychromeSprite(p) => &mut p.content_mask,
         Primitive::Surface(p) => &mut p.content_mask,
         Primitive::GpuPaint(p) => &mut p.content_mask,
+        Primitive::BackdropBlurRect(p) => &mut p.content_mask,
     };
     content_mask.bounds = content_mask.bounds.intersect(mask);
 }
@@ -229,6 +231,10 @@ fn describe(primitive: &Primitive) -> String {
         ),
         Primitive::Surface(p) => format!("surface {:?} {:?}", p.bounds, p.content_mask),
         Primitive::GpuPaint(p) => format!("gpu paint {:?} {:?}", p.bounds, p.content_mask),
+        Primitive::BackdropBlurRect(p) => format!(
+            "backdrop blur {:?} {:?} {:?}",
+            p.bounds, p.content_mask, p.blur_radius
+        ),
     }
 }
 

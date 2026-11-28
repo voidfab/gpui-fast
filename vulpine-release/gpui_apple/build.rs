@@ -69,6 +69,8 @@ mod apple_build {
             "SurfaceInputIndex".into(),
             "SurfaceBounds".into(),
             "TransformationMatrix".into(),
+            // vulpine (FOX9-a010dd): the backdrop blur's instance.
+            "BackdropBlurRect".into(),
         ]);
         config.no_includes = true;
         config.enumeration.prefix_with_name = true;

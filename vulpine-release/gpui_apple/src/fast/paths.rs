@@ -208,6 +208,21 @@ pub(crate) fn draw_primitives_to_texture(
                 viewport_size,
                 &[],
             )?,
+            // vulpine (FOX9-a010dd): the pass breaks for a snapshot of what is drawn so far.
+            PrimitiveBatch::BackdropBlurRects(range) => {
+                command_encoder = crate::fast::backdrop::draw(
+                    &mut renderer.backdrop,
+                    &renderer.device,
+                    &command_buffer,
+                    command_encoder,
+                    texture,
+                    &scene.backdrop_blur_rects[range.clone()],
+                    range.start,
+                    &instance_bindings.backdrop_blur_rects,
+                    viewport_size,
+                    |_| {},
+                )?
+            }
             PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
         }
     }

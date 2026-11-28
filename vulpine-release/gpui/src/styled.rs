@@ -1,3 +1,4 @@
+// Modified by Longbridge for gpui-fast.
 use crate::{
     self as gpui, AbsoluteLength, AlignContent, AlignItems, AlignSelf, BorderStyle, CursorStyle,
     DefiniteLength, Display, Fill, FlexDirection, FlexWrap, Font, FontFeatures, FontStyle,
@@ -745,6 +746,14 @@ pub trait Styled: Sized {
     /// Sets the opacity of this element and its children.
     fn opacity(mut self, opacity: f32) -> Self {
         self.style().opacity = Some(opacity);
+        self
+    }
+
+    /// vulpine (FOX9-a010dd): blurs everything already painted behind this element's border box, clipped to its
+    /// corner radii, under its background (CSS `backdrop-filter: blur(<length>)`). Ported from Skathi's gpui fork
+    /// (Apache-2.0). Drawn by the Metal renderer only ([`crate::Window::supports_backdrop_blur`]).
+    fn backdrop_blur(mut self, radius: impl Into<crate::Pixels>) -> Self {
+        self.style().backdrop_blur = Some(radius.into());
         self
     }
 

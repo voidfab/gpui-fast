@@ -1,0 +1,19 @@
+voidfab/gpui-fast: notices for code this fork carries from other projects
+
+Backdrop blur (vulpine FOX9-a010dd, 2026-11-28)
+
+  The backdrop blur on this branch is ported, with changes, from skathi-gpui
+  (https://github.com/argon-chat/skathi; Skathi's renderer work on top of Zed's gpui), licensed under the
+  Apache License, Version 2.0 (LICENSE-APACHE in this repository; skathi-gpui's copy carries
+  "Copyright 2022 - 2025 Zed Industries, Inc.").
+
+  Files carrying ported code, each marked "vulpine (FOX9-a010dd)" where it changes:
+    crates/gpui/src/scene.rs             BackdropBlurRect, MAX_BACKDROP_BLUR_KERNEL_LEVELS, the batch
+    crates/gpui/src/window.rs            Window::paint_backdrop_blur_rect, BackdropBlurEffect
+    crates/gpui/src/style.rs, styled.rs  Style::backdrop_blur, Styled::backdrop_blur
+    crates/gpui_apple/src/shaders.metal  the Dual-Kawase down/up passes and the rounded-rect composite
+    crates/gpui_apple/src/fast/backdrop.rs, backdrop_tests.rs
+
+  Changed from skathi-gpui: ported onto this fork's objc2-metal renderer and its fast:: seams (rounded clip
+  groups, retained layers, the in-frame painter); no corner shapes, shader effects, effect history or isolated
+  layers; the blur's own order inside a scene layer; a CPU twin the readback is tested against.
